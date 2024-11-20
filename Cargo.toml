@@ -18,3 +18,5 @@ atrium-api = { version = "0.24.8", default-features = false, features = ["namesp
 
 serde = { version = "1.0.215", features = ["derive"] }
 simd-json = "0.14.3"
+
+log = "0.4.22"
