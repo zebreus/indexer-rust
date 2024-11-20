@@ -108,7 +108,7 @@ fn main() {
         .format(colog::formatter(CustomPrefixToken))
         .init();
     info!(target: "jetstream",
-        "=============================================\n\
+        "\n=============================================\n\
         jetstream client - v{}\n\
         =============================================\n\
         \n\
