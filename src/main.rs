@@ -3,7 +3,12 @@ use colog::format::CologStyle;
 use colored::Colorize;
 use log::{info, Level, LevelFilter};
 
+use mimalloc::MiMalloc;
+
 mod application;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 pub struct CustomPrefixToken;
 
