@@ -1,5 +1,8 @@
 use anyhow::Context;
-use log::{error, info};
+use fastwebsockets::{OpCode, WebSocket};
+use hyper::upgrade::Upgraded;
+use hyper_util::rt::TokioIo;
+use log::{error, info, warn};
 
 mod ws;
 mod events;
@@ -56,5 +59,44 @@ pub async fn launch_client(host: &String, cert: &String, initial_cursor: Option<
             error!(target: "jetstream", "error handling websocket: {:?}", res.err().unwrap());
         }
 
+    }
+}
+
+///
+/// Handle the websocket connection
+///
+/// # Arguments
+///
+/// * `ws` - The websocket connection
+///
+/// # Returns
+///
+/// * `Result<(), anyhow::Error>` - The result of the operation
+///
+async fn handle_ws(mut ws: WebSocket<TokioIo<Upgraded>>)
+    -> Result<(), anyhow::Error> {
+
+    // loop reading messages
+    loop {
+
+        // try to read a message
+        let msg = ws.read_frame()
+            .await.context("failed to read message from websocket")?;
+
+        // handle message
+        match msg.opcode {
+            // spec states only text frames are allowed
+            OpCode::Continuation | OpCode::Binary | OpCode::Ping | OpCode::Pong => {
+                warn!(target: "jetstream", "unexpected opcode: {:?}", msg.opcode);
+            },
+            // can be emitted by the server
+            OpCode::Close => {
+                anyhow::bail!("unexpected connection close: {:?}", msg.payload);
+            },
+            // handle text message
+            OpCode::Text => {
+                rayon::spawn(move || { handle_text(msg); });
+            }
+        };
     }
 }
