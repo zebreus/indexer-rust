@@ -3,6 +3,7 @@ use atrium_api::{record::KnownRecord, types::string::{Did, Handle, RecordKey}};
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 #[serde(tag = "operation")]
 pub enum Commit {
     #[serde(rename = "create")]
@@ -31,6 +32,7 @@ pub enum Commit {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 pub struct Identity {
     pub did: Did,
     pub handle: Handle,
@@ -39,6 +41,7 @@ pub struct Identity {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 pub struct Account {
     pub active: bool,
     pub did: Did,
@@ -47,6 +50,7 @@ pub struct Account {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 #[serde(tag = "kind")]
 pub enum Kind {
     #[serde(rename = "commit")]
