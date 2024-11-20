@@ -1,6 +1,27 @@
 use clap::{value_parser, Arg, ArgAction, Command};
+use colog::format::CologStyle;
+use colored::Colorize;
+use log::{info, Level, LevelFilter};
 
 mod application;
+
+pub struct CustomPrefixToken;
+
+impl CologStyle for CustomPrefixToken {
+    fn prefix_token(&self, level: &Level) -> String {
+        format!(
+            "[{}] [{}]",
+            chrono::Local::now().format("%d.%m.%Y %H:%M:%S"),
+            match level {
+                Level::Error => "E".red(),
+                Level::Warn => "W".yellow(),
+                Level::Info => "*".green(),
+                Level::Debug => "D".blue(),
+                Level::Trace => "T".purple(),
+            }
+        )
+    }
+}
 
 fn main() {
     const DEFAULT_HOST: &str = "jetstream.de-4.skyfeed.network";
@@ -67,4 +88,27 @@ fn main() {
         .expect("invalid value for --parse-threads");
     let cursor: Option<&u64> = matches.get_one("cursor");
     let verbose = matches.get_flag("verbose");
+
+    // initialize logging
+    let loglevel = if verbose { LevelFilter::Debug } else { LevelFilter::Info };
+    colog::default_builder()
+        .filter_level(LevelFilter::Off)
+        .filter_module("jetstream", loglevel)
+        .format(colog::formatter(CustomPrefixToken))
+        .init();
+    info!(target: "jetstream",
+        "=============================================\n\
+        jetstream client - v{}\n\
+        =============================================\n\
+        \n\
+        host:          {}\n\
+        certificate:   {}\n\
+        async threads: {}\n\
+        parse threads: {}\n\
+        cursor:        {}\n\
+        \n",
+        env!("CARGO_PKG_VERSION"),
+        host, cert, async_threads, parse_threads,
+        if cursor.is_none() { "none".to_string() } else { cursor.unwrap().to_string() }
+    );
 }
