@@ -50,8 +50,10 @@ pub async fn connect(domain: &str, cert: &str, cursor: u64, wanted_collections: 
         .await.context("unable to establish tls connection")?;
 
     // upgrade connection to websocket
-    let uri = format!("wss://{}/subscribe?wantedCollections={}&cursor={}",
-        domain, wanted_collections.join(";"), cursor);
+    let uri = format!("wss://{}/subscribe?wantedCollections={}{}",
+        domain,
+        wanted_collections.join(";"),
+        if cursor == 0 { String::new() } else { format!("&cursor={}", cursor.to_string()) });
     let req_builder = Request::builder()
         .method("GET")
         .uri(uri)
