@@ -1,8 +1,12 @@
+use std::sync::{LazyLock, RwLock};
+
 use anyhow::Context;
+use events::Kind;
 use fastwebsockets::{Frame, OpCode, WebSocket};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use log::{error, info, warn};
+use tokio::time::sleep;
 
 mod ws;
 mod events;
@@ -26,6 +30,8 @@ const NSIDS: [&str; 15] = [
     "chat.bsky.actor.declaration"
 ];
 
+static CURRENT_CURSOR: LazyLock<RwLock<u64>> = LazyLock::new(|| RwLock::new(0));
+
 ///
 /// Main function for the application
 ///
@@ -39,18 +45,27 @@ const NSIDS: [&str; 15] = [
 ///
 /// * `Result<(), anyhow::Error>` - The result of the operation
 ///
-pub async fn launch_client(host: &String, cert: &String, initial_cursor: Option<&u64>) ->
+pub async fn launch_client(host: &String, cert: &String, initial_cursor: u64) ->
     Result<(), anyhow::Error> {
+
+    // update current cursor initially
+    {
+        let mut current_cursor = CURRENT_CURSOR.write().unwrap();
+        *current_cursor = initial_cursor;
+    }
 
     // loop infinitely, ensuring connection aborts are handled
     loop {
 
-        // TODO: if the connection fails, the cursor should be rewinded to the last received position minus
-        // a certain amount of time, to ensure no data is lost.
+        // get current cursor
+        let cursor = {
+            let current_cursor = CURRENT_CURSOR.read().unwrap();
+            *current_cursor
+        };
 
         // create a new connection
         let ws =
-           ws::connect(host, cert, initial_cursor, NSIDS.to_vec())
+           ws::connect(host, cert, cursor, NSIDS.to_vec())
             .await.context("failed to establish connection to jetstream")?;
         info!(target: "jetstream", "established new connection to jetstream server");
 
@@ -58,6 +73,16 @@ pub async fn launch_client(host: &String, cert: &String, initial_cursor: Option<
         if res.is_err() {
             error!(target: "jetstream", "error handling websocket: {:?}", res.err().unwrap());
         }
+
+        // rewind cursor by 2 seconds
+        {
+            let mut current_cursor = CURRENT_CURSOR.write().unwrap();
+            *current_cursor -= 2;
+            info!(target: "jetstream", "rewinding cursor by 2 seconds: {} -> {}", cursor, *current_cursor);
+        }
+
+        // give the server 200 ms to recover
+        sleep(std::time::Duration::from_millis(200)).await;
 
     }
 }
@@ -123,5 +148,19 @@ fn handle_text(msg: Frame<'_>) {
     }
     let event = event.unwrap();
 
-    // TODO: handle event
+    // update cursor if possible
+    {
+        let time = match event {
+            Kind::CommitEvent { time_us, .. } => time_us,
+            Kind::IdentityEvent { time_us, .. } => time_us,
+            Kind::KeyEvent { time_us, .. } => time_us
+        };
+
+        // instead of unwrapping, we don't care if the variable is locked
+        // as the very next post a few microseconds later will update it.
+        // however, if this lock is poisoned, we will never update the cursor!!
+        if let Ok(mut current_cursor) = CURRENT_CURSOR.write() {
+            *current_cursor = time;
+        }
+    }
 }

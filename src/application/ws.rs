@@ -24,7 +24,7 @@ use tokio_rustls::{rustls::{pki_types::{pem::PemObject, CertificateDer, ServerNa
 ///
 /// Returns an anyhow::Error if the connection fails containing the reason.
 ///
-pub async fn connect(domain: &str, cert: &str, cursor: Option<&u64>, wanted_collections: Vec<&str>) ->
+pub async fn connect(domain: &str, cert: &str, cursor: u64, wanted_collections: Vec<&str>) ->
     Result<WebSocket<TokioIo<Upgraded>>, anyhow::Error> {
 
     // prepare tls store
@@ -50,11 +50,8 @@ pub async fn connect(domain: &str, cert: &str, cursor: Option<&u64>, wanted_coll
         .await.context("unable to establish tls connection")?;
 
     // upgrade connection to websocket
-    let uri = format!(
-        "wss://{}/subscribe?wantedCollections={}{}", domain,
-        wanted_collections.join(";"),
-        cursor.map(|c| format!("&cursor={}", c)).unwrap_or_default()
-    );
+    let uri = format!("wss://{}/subscribe?wantedCollections={}&cursor={}",
+        domain, wanted_collections.join(";"), cursor);
     let req_builder = Request::builder()
         .method("GET")
         .uri(uri)

@@ -83,6 +83,7 @@ fn main() {
                 .long("cursor")
                 .help("Specify a unix microseconds timestamp to start playback from")
                 .value_parser(value_parser!(u64))
+                .default_value("0")
                 .action(ArgAction::Set)
         );
 
@@ -95,7 +96,8 @@ fn main() {
         .expect("invalid value for --async-threads");
     let parse_threads: usize = *matches.get_one("parse-threads")
         .expect("invalid value for --parse-threads");
-    let cursor: Option<&u64> = matches.get_one("cursor");
+    let cursor: u64 = *matches.get_one("cursor")
+        .expect("invalid value for --cursor");
     let verbose = matches.get_flag("verbose");
 
     // initialize logging
@@ -117,8 +119,7 @@ fn main() {
         cursor:        {}\n\
         \n",
         env!("CARGO_PKG_VERSION"),
-        host, cert, async_threads, parse_threads,
-        if cursor.is_none() { "none".to_string() } else { cursor.unwrap().to_string() }
+        host, cert, async_threads, parse_threads, cursor
     );
 
     // create global rayon thread pool
@@ -143,7 +144,8 @@ fn main() {
     let rt = builder.build().unwrap();
 
     // launch async main
-    let main = rt.block_on(application::launch_client(host, cert, cursor));
+    let main = rt.block_on(
+        application::launch_client(host, cert, cursor));
     if main.is_err() {
         error!(target: "jetstream", "{:?}", main.err().unwrap());
     }
