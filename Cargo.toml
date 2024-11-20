@@ -1,0 +1,12 @@
+[package]
+name = "jetstream"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.93"
+hyper = "1.5.1"
+hyper-util ="0.1.10"
+tokio = { version = "1.41.1", features = ["parking_lot", "rt-multi-thread"] }
+tokio-rustls = "0.26.0"
+fastwebsockets = { version = "0.8.0", features = ["upgrade"] }
