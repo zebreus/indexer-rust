@@ -1,5 +1,5 @@
 use anyhow::Context;
-use fastwebsockets::{OpCode, WebSocket};
+use fastwebsockets::{Frame, OpCode, WebSocket};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use log::{error, info, warn};
@@ -99,4 +99,29 @@ async fn handle_ws(mut ws: WebSocket<TokioIo<Upgraded>>)
             }
         };
     }
+}
+
+///
+/// Handle a text message
+/// NOTE: This function is run in multiple threads!
+///
+/// # Arguments
+///
+/// * `ws` - The websocket connection
+/// * `msg` - The message to handle
+///
+fn handle_text(msg: Frame<'_>) {
+    // decode message
+    let text = String::from_utf8(msg.payload.to_vec())
+        .unwrap(); // it's fine to panic here, because something is very wrong if this fails
+
+    // parse message
+    let event = events::parse_event(text);
+    if event.is_err() {
+        warn!(target: "jetstream", "failed to parse event: {:?}", event.err().unwrap());
+        return;
+    }
+    let event = event.unwrap();
+
+    // TODO: handle event
 }
