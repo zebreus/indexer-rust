@@ -1,4 +1,4 @@
-use std::sync::{LazyLock, RwLock};
+use std::{sync::{LazyLock, RwLock}, time::{Duration, Instant}};
 
 use anyhow::Context;
 use events::Kind;
@@ -30,7 +30,18 @@ const NSIDS: [&str; 15] = [
     "chat.bsky.actor.declaration"
 ];
 
+/// Cursor to keep track of the current position in the stream
 static CURSOR: LazyLock<RwLock<u64>> = LazyLock::new(|| RwLock::new(0));
+/// Various metrics
+static READ_ERRORS: LazyLock<RwLock<u64>> = LazyLock::new(|| RwLock::new(0));
+static PARSE_ERRORS: LazyLock<RwLock<u64>> = LazyLock::new(|| RwLock::new(0));
+static SUCCESSFUL_EVENTS: LazyLock<RwLock<u64>> = LazyLock::new(|| RwLock::new(0));
+
+fn try_increase_counter(counter: &LazyLock<RwLock<u64>>) {
+    if let Ok(mut counter) = counter.write() {
+        *counter += 1;
+    }
+}
 
 ///
 /// Main function for the application
@@ -71,6 +82,7 @@ pub async fn launch_client(host: &String, cert: &String, initial_cursor: u64) ->
 
         let res = handle_ws(ws).await;
         if res.is_err() {
+            try_increase_counter(&READ_ERRORS);
             error!(target: "jetstream", "error handling websocket: {:?}", res.err().unwrap());
         }
 
@@ -82,7 +94,7 @@ pub async fn launch_client(host: &String, cert: &String, initial_cursor: u64) ->
         }
 
         // give the server 200 ms to recover
-        sleep(std::time::Duration::from_millis(200)).await;
+        sleep(Duration::from_millis(200)).await;
 
     }
 }
@@ -102,6 +114,8 @@ async fn handle_ws(mut ws: WebSocket<TokioIo<Upgraded>>)
     -> Result<(), anyhow::Error> {
 
     // loop reading messages
+    let mut now = Instant::now();
+
     loop {
 
         // try to read a message
@@ -123,6 +137,27 @@ async fn handle_ws(mut ws: WebSocket<TokioIo<Upgraded>>)
                 rayon::spawn(move || { handle_text(msg); });
             }
         };
+
+        // print metrics every 60 seconds
+        if now.elapsed().as_secs() >= 60 {
+            let read_errors = {
+                let read_errors = READ_ERRORS.read().unwrap();
+                *read_errors
+            };
+            let parse_errors = {
+                let parse_errors = PARSE_ERRORS.read().unwrap();
+                *parse_errors
+            };
+            let successful_events = {
+                let successful_events = SUCCESSFUL_EVENTS.read().unwrap();
+                *successful_events
+            };
+
+            info!(target: "jetstream", "read errors: {}, parse errors: {}, successful events: {}",
+                  read_errors, parse_errors, successful_events);
+
+            now = Instant::now();
+        }
     }
 }
 
@@ -143,6 +178,7 @@ fn handle_text(msg: Frame<'_>) {
     // parse message
     let event = events::parse_event(text);
     if event.is_err() {
+        try_increase_counter(&PARSE_ERRORS);
         warn!(target: "jetstream", "failed to parse event: {:?}", event.err().unwrap());
         return;
     }
@@ -163,4 +199,6 @@ fn handle_text(msg: Frame<'_>) {
             *current_cursor = time;
         }
     }
+
+    try_increase_counter(&SUCCESSFUL_EVENTS);
 }
