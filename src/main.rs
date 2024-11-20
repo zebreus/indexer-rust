@@ -1,7 +1,11 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use clap::{value_parser, Arg, ArgAction, Command};
 use colog::format::CologStyle;
 use colored::Colorize;
-use log::{info, Level, LevelFilter};
+use log::{error, info, Level, LevelFilter};
+use rayon::ThreadPoolBuilder;
+use tokio::runtime::Builder;
 
 use mimalloc::MiMalloc;
 
@@ -116,4 +120,31 @@ fn main() {
         host, cert, async_threads, parse_threads,
         if cursor.is_none() { "none".to_string() } else { cursor.unwrap().to_string() }
     );
+
+    // create global rayon thread pool
+    ThreadPoolBuilder::new()
+        .num_threads(parse_threads)
+        .thread_name(|i| format!("parse-{}", i))
+        .build_global()
+        .unwrap();
+
+    // build tokio runtime
+    let mut builder = Builder::new_multi_thread();
+    builder.enable_all();
+    builder.thread_name_fn(|| {
+        static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
+        let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+        format!("async-{}", id)
+    });
+    if async_threads > 0 {
+        builder.worker_threads(async_threads);
+    }
+
+    let rt = builder.build().unwrap();
+
+    // launch async main
+    let main = rt.block_on(application::launch_client(host, cert, cursor));
+    if main.is_err() {
+        error!(target: "jetstream", "{:?}", main.err().unwrap());
+    }
 }
