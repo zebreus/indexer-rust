@@ -30,3 +30,6 @@ colored = "2.1.0"
 chrono = "0.4.38"
 
 mimalloc = "0.1.43"
+
+surrealdb = { version = "2.0.4", features = [] }
+surrealdb-tikv-client = "0.3.0-surreal.1"

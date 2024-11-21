@@ -6,6 +6,7 @@ use fastwebsockets::{Frame, OpCode, WebSocket};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use log::{error, info, warn};
+use surrealdb::{RecordId, Surreal};
 use tokio::time::sleep;
 
 mod ws;
@@ -37,6 +38,8 @@ static READ_ERRORS: LazyLock<RwLock<u64>> = LazyLock::new(|| RwLock::new(0));
 static PARSE_ERRORS: LazyLock<RwLock<u64>> = LazyLock::new(|| RwLock::new(0));
 static SUCCESSFUL_EVENTS: LazyLock<RwLock<u64>> = LazyLock::new(|| RwLock::new(0));
 
+static DB: LazyLock<Surreal<surrealdb::engine::remote::ws::Client>> = LazyLock::new(Surreal::init);
+
 fn try_increase_counter(counter: &LazyLock<RwLock<u64>>) {
     if let Ok(mut counter) = counter.write() {
         *counter += 1;
@@ -56,8 +59,13 @@ fn try_increase_counter(counter: &LazyLock<RwLock<u64>>) {
 ///
 /// * `Result<(), anyhow::Error>` - The result of the operation
 ///
-pub async fn launch_client(host: &String, cert: &String, initial_cursor: u64) ->
-    Result<(), anyhow::Error> {
+pub async fn launch_client(
+    host: &String,
+    cert: &String,
+    initial_cursor: u64,
+) -> Result<(), anyhow::Error> {
+    // connect to the database
+    connect_to_db().await?;
 
     // update current cursor initially
     {
@@ -95,8 +103,49 @@ pub async fn launch_client(host: &String, cert: &String, initial_cursor: u64) ->
 
         // give the server 200 ms to recover
         sleep(Duration::from_millis(200)).await;
-
     }
+}
+
+async fn connect_to_db() -> anyhow::Result<()> {
+    // Connect to the database
+    DB.connect::<surrealdb::engine::remote::ws::Ws>("127.0.0.1:8000")
+        .await?;
+
+    // Sign in to the server
+    DB.signin(surrealdb::opt::auth::Root {
+        username: "root",
+        password: "root",
+    })
+    .await?;
+
+    DB.query("DEFINE NAMESPACE atp;").await?;
+    DB.use_ns("atp").await?;
+
+    DB.query("DEFINE DATABASE atp;").await?;
+    DB.use_ns("atp").use_db("atp").await?;
+
+    // TODO Add all types
+    DB.query(
+        "
+DEFINE TABLE did SCHEMAFULL;
+DEFINE FIELD handle ON TABLE did TYPE option<string>;
+DEFINE FIELD displayName ON TABLE did TYPE option<string>;
+DEFINE FIELD description ON TABLE did TYPE option<string>;
+DEFINE FIELD avatar ON TABLE did TYPE option<record<blob>>;
+DEFINE FIELD banner ON TABLE did TYPE option<record<blob>>;
+DEFINE FIELD labels ON TABLE did TYPE option<array>;
+DEFINE FIELD labels.* ON TABLE did TYPE string;
+DEFINE FIELD joinedViaStarterPack ON TABLE did TYPE option<record<starterpack>>;
+DEFINE FIELD pinnedPost ON TABLE did TYPE option<record<post>>;
+DEFINE FIELD createdAt ON TABLE did TYPE datetime;
+
+DEFINE TABLE post SCHEMAFULL;
+DEFINE FIELD text ON TABLE post TYPE string;
+", // record<one | two>
+    )
+    .await?;
+
+    Ok(())
 }
 
 ///
