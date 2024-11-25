@@ -27,6 +27,8 @@ use tokio_rustls::{rustls::{pki_types::{pem::PemObject, CertificateDer, ServerNa
 pub async fn connect(domain: &str, cert: &str, cursor: u64, wanted_collections: Vec<&str>) ->
     Result<WebSocket<TokioIo<Upgraded>>, anyhow::Error> {
 
+    tokio_rustls::rustls::crypto::ring::default_provider().install_default().expect("Failed to install rustls crypto provider");
+        
     // prepare tls store
     let mut tls_store = RootCertStore::empty();
     let tls_cert = CertificateDer::from_pem_file(cert)

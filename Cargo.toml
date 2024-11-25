@@ -7,14 +7,17 @@ edition = "2021"
 anyhow = "1.0.93"
 
 hyper = "1.5.1"
-hyper-util ="0.1.10"
+hyper-util = "0.1.10"
 
 tokio = { version = "1.41.1", features = ["parking_lot", "rt-multi-thread"] }
 tokio-rustls = "0.26.0"
 
 fastwebsockets = { version = "0.8.0", features = ["upgrade"] }
 
-atrium-api = { version = "0.24.8", default-features = false, features = ["namespace-appbsky", "namespace-chatbsky"]}
+atrium-api = { version = "0.24.8", default-features = false, features = [
+    "namespace-appbsky",
+    "namespace-chatbsky",
+] }
 
 serde = { version = "1.0.215", features = ["derive"] }
 simd-json = "0.14.3"
@@ -31,5 +34,8 @@ chrono = "0.4.38"
 
 mimalloc = "0.1.43"
 
-surrealdb = { version = "2.0.4", features = [] }
+surrealdb = { version = "2.1.0", features = [] }
 surrealdb-tikv-client = "0.3.0-surreal.1"
+
+regex = "1.11.1"
+lazy_static = "1.5.0"

@@ -33,7 +33,7 @@ impl CologStyle for CustomPrefixToken {
 }
 
 fn main() {
-    const DEFAULT_HOST: &str = "jetstream.de-4.skyfeed.network";
+    const DEFAULT_HOST: &str = "jetstream2.us-east.bsky.network";
     const DEFAULT_CERT: &str = "/etc/ssl/certs/ISRG_Root_X1.pem";
 
     // parse command line arguments
@@ -77,14 +77,6 @@ fn main() {
                 .long("verbose")
                 .help("Enable verbose output")
                 .action(ArgAction::SetTrue)
-        )
-        .arg(
-            Arg::new("cursor")
-                .long("cursor")
-                .help("Specify a unix microseconds timestamp to start playback from")
-                .value_parser(value_parser!(u64))
-                .default_value("0")
-                .action(ArgAction::Set)
         );
 
     let matches = cmd.get_matches();
@@ -96,8 +88,6 @@ fn main() {
         .expect("invalid value for --async-threads");
     let parse_threads: usize = *matches.get_one("parse-threads")
         .expect("invalid value for --parse-threads");
-    let cursor: u64 = *matches.get_one("cursor")
-        .expect("invalid value for --cursor");
     let verbose = matches.get_flag("verbose");
 
     // initialize logging
@@ -116,10 +106,9 @@ fn main() {
         certificate:   {}\n\
         async threads: {}\n\
         parse threads: {}\n\
-        cursor:        {}\n\
         \n",
         env!("CARGO_PKG_VERSION"),
-        host, cert, async_threads, parse_threads, cursor
+        host, cert, async_threads, parse_threads
     );
 
     // create global rayon thread pool
@@ -145,7 +134,7 @@ fn main() {
 
     // launch async main
     let main = rt.block_on(
-        application::launch_client(host, cert, cursor));
+        application::launch_client(host, cert));
     if main.is_err() {
         error!(target: "jetstream", "{:?}", main.err().unwrap());
     }

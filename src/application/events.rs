@@ -6,17 +6,8 @@ use serde::Deserialize;
 #[allow(dead_code)]
 #[serde(tag = "operation")]
 pub enum Commit {
-    #[serde(rename = "create")]
-    Create {
-        rev: String,
-        collection: String,
-        rkey: RecordKey,
-        record: KnownRecord,
-        cid: String
-    },
-    #[serde(rename = "update")]
-    Update {
-        // fields are speculated, not documented:
+    #[serde(rename = "create", alias = "update")]
+    CreateOrUpdate {
         rev: String,
         collection: String,
         rkey: RecordKey,
