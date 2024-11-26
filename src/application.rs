@@ -417,7 +417,7 @@ async fn handle_text(msg: Frame<'_>) -> anyhow::Result<()> {
                                     description: d.description.clone(),
                                     avatar: None, // TODO Implement
                                     banner: None, // TODO Implement
-                                    created_at: extract_dt(&d.created_at)?,
+                                    created_at: extract_dt_option(&d.created_at)?,
                                     seen_at: Utc::now().into(),
                                     joined_via_starter_pack: strong_ref_to_record_id(
                                         &d.joined_via_starter_pack,
@@ -427,10 +427,91 @@ async fn handle_text(msg: Frame<'_>) -> anyhow::Result<()> {
                                 })
                                 .await?;
                         }
-                        /* KnownRecord::AppBskyFeedLike(d) => {
-                            // let id = format!("{}_{}", rkey.as_str(), did_key);
-                            // TODO let _ = DB.query(query)
-                        } */
+                        KnownRecord::AppBskyGraphFollow(d) => {
+                            // TODO ensure_valid_rkey_strict(rkey.as_str())?;
+                            let from = did_to_key(did.as_str())?;
+                            let id = format!("{}_{}", rkey.as_str(), from);
+                            let to = did_to_key(d.subject.as_str())?;
+                            let created_at = extract_dt(&d.created_at)?;
+
+                            let _ = DB
+                                .query(format!(
+                                    "RELATE did:{}->follow->did:{} SET id = '{}', createdAt = {};",
+                                    from, to, id, created_at
+                                ))
+                                .await?;
+                        }
+                        KnownRecord::AppBskyFeedLike(d) => {
+                            // TODO ensure_valid_rkey_strict(rkey.as_str())?;
+                            let from = did_to_key(did.as_str())?;
+                            let id = format!("{}_{}", rkey.as_str(), from);
+                            let to = at_uri_to_record_id(&d.subject.uri)?;
+                            let created_at = extract_dt(&d.created_at)?;
+
+                            DB.query(format!(
+                                "RELATE did:{}->like->{} SET id = '{}', createdAt = {};",
+                                from, to, id, created_at
+                            ))
+                            .await?;
+                        }
+                        KnownRecord::AppBskyFeedRepost(d) => {
+                            // TODO ensure_valid_rkey_strict(rkey.as_str())?;
+                            let from = did_to_key(did.as_str())?;
+                            let id = format!("{}_{}", rkey.as_str(), from);
+                            let to = at_uri_to_record_id(&d.subject.uri)?;
+                            let created_at = extract_dt(&d.created_at)?;
+
+                            let _ = DB
+                                .query(format!(
+                                    "RELATE did:{}->repost->{} SET id = '{}', createdAt = {};",
+                                    from, to, id, created_at
+                                ))
+                                .await?;
+                        }
+                        KnownRecord::AppBskyGraphBlock(d) => {
+                            // TODO ensure_valid_rkey_strict(rkey.as_str())?;
+                            let from = did_to_key(did.as_str())?;
+                            let id = format!("{}_{}", rkey.as_str(), from);
+                            let to = did_to_key(d.subject.as_str())?;
+                            let created_at = extract_dt(&d.created_at)?;
+
+                            let _ = DB
+                                .query(format!(
+                                    "RELATE did:{}->block->did:{} SET id = '{}', createdAt = {};",
+                                    from, to, id, created_at
+                                ))
+                                .await?;
+                        }
+                        KnownRecord::AppBskyGraphListblock(d) => {
+                            // TODO ensure_valid_rkey_strict(rkey.as_str())?;
+                            let from = did_to_key(did.as_str())?;
+                            let id = format!("{}_{}", rkey.as_str(), from);
+                            let to = at_uri_to_record_id(&d.subject)?;
+                            let created_at = extract_dt(&d.created_at)?;
+
+                            let _ = DB
+                                .query(format!(
+                                    "RELATE did:{}->listblock->{} SET id = '{}', createdAt = {};",
+                                    from, to, id, created_at
+                                ))
+                                .await?;
+                        }
+                        KnownRecord::AppBskyGraphListitem(d) => {
+                            // TODO ensure_valid_rkey_strict(rkey.as_str())?;
+                            let from = did_to_key(did.as_str())?;
+                            let id = format!("{}_{}", rkey.as_str(), from);
+
+                            let from = at_uri_to_record_id(&d.list)?;
+                            let to = did_to_key(&d.subject)?;
+                            let created_at = extract_dt(&d.created_at)?;
+
+                            let _ = DB
+                                .query(format!(
+                                    "RELATE {}->listitem->did:{} SET id = '{}', createdAt = {};",
+                                    from, to, id, created_at
+                                ))
+                                .await?;
+                        }
                         _ => {
                             log::warn!(
                                 "ignored create_or_update {} {} {}",

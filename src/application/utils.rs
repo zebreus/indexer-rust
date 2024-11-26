@@ -3,16 +3,20 @@ use atrium_api::types::string::RecordKey;
 use regex::Regex;
 use surrealdb::RecordId;
 
-pub fn extract_dt(
+pub fn extract_dt_option(
     dt: &Option<atrium_api::types::string::Datetime>,
 ) -> Result<Option<surrealdb::Datetime>> {
     match dt {
         Some(dt) => {
-            let res = chrono::DateTime::parse_from_rfc3339(dt.as_str())?.to_utc();
-            Ok(Some(res.into()))
+            let res = extract_dt(dt)?;
+            Ok(Some(res))
         }
         None => Ok(None),
     }
+}
+pub fn extract_dt(dt: &atrium_api::types::string::Datetime) -> Result<surrealdb::Datetime> {
+    let res = chrono::DateTime::parse_from_rfc3339(dt.as_str())?.to_utc();
+    Ok(res.into())
 }
 
 pub fn extract_self_labels(
