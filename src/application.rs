@@ -83,6 +83,10 @@ pub async fn launch_client(host: &String, cert: &String) -> Result<(), anyhow::E
         info!(target: "jetstream", "using cursor {}", cursor);
     }
 
+    tokio_rustls::rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     // loop infinitely, ensuring connection aborts are handled
     loop {
         // get current cursor
