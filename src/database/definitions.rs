@@ -21,6 +21,8 @@ pub struct BskyProfile {
     pub labels: Option<Vec<String>>,
     #[serde(rename = "pinnedPost")]
     pub pinned_post: Option<RecordId>,
+    #[serde(rename = "extraData")]
+    pub extra_data: String,
 }
 
 /// Database struct for a record
@@ -57,6 +59,8 @@ pub struct BskyPost {
     pub text: String,
     pub via: Option<String>,
     pub video: Option<BskyPostVideo>,
+    #[serde(rename = "extraData")]
+    pub extra_data: String,
 }
 
 /// Database struct for a bluesky post image
@@ -106,6 +110,8 @@ pub struct BskyFeed {
     pub avatar: Option<RecordId>,
     #[serde(rename = "createdAt")]
     pub created_at: Datetime,
+    #[serde(rename = "extraData")]
+    pub extra_data: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -117,6 +123,8 @@ pub struct BskyList {
     pub description: Option<String>,
     pub avatar: Option<RecordId>,
     pub labels: Option<Vec<String>>,
+    #[serde(rename = "extraData")]
+    pub extra_data: String,
 }
 
 /// Initialize the database with the necessary definitions
@@ -149,6 +157,7 @@ DEFINE FIELD joinedViaStarterPack ON TABLE did TYPE option<record<starterpack>>;
 DEFINE FIELD pinnedPost ON TABLE did TYPE option<record<post>>;
 DEFINE FIELD createdAt ON TABLE did TYPE option<datetime>;
 DEFINE FIELD seenAt ON TABLE did TYPE datetime;
+DEFINE FIELD extraData ON TABLE feed TYPE option<string>;
 
 DEFINE TABLE post SCHEMAFULL;
 DEFINE FIELD author ON TABLE post TYPE record<did>;
@@ -178,6 +187,7 @@ DEFINE FIELD video.blob.cid ON TABLE post TYPE option<string>;
 DEFINE FIELD video.blob.mediaType ON TABLE post TYPE option<string>;
 DEFINE FIELD video.blob.size ON TABLE post TYPE option<int>;
 DEFINE FIELD video.captions ON TABLE post TYPE option<array<object>>;
+DEFINE FIELD extraData ON TABLE feed TYPE option<string>;
 
 DEFINE TABLE feed SCHEMAFULL;
 DEFINE FIELD uri ON TABLE feed TYPE string;
@@ -188,6 +198,7 @@ DEFINE FIELD displayName ON TABLE feed TYPE string;
 DEFINE FIELD description ON TABLE feed TYPE option<string>;
 DEFINE FIELD avatar ON TABLE feed TYPE option<record<blob>>;
 DEFINE FIELD createdAt ON TABLE feed TYPE datetime;
+DEFINE FIELD extraData ON TABLE feed TYPE option<string>;
 
 DEFINE TABLE list SCHEMAFULL;
 DEFINE FIELD name ON TABLE list TYPE string;
@@ -196,6 +207,7 @@ DEFINE FIELD createdAt ON TABLE list TYPE datetime;
 DEFINE FIELD description ON TABLE list TYPE option<string>;
 DEFINE FIELD avatar ON TABLE list TYPE option<record<blob>>;
 DEFINE FIELD labels ON TABLE list TYPE option<array<string>>;
+DEFINE FIELD extraData ON TABLE feed TYPE option<string>;
 
 
 DEFINE TABLE follow SCHEMAFULL TYPE RELATION FROM did TO did;

@@ -1,5 +1,4 @@
 use ::atrium_api::{
-    app::bsky::actor::profile::RecordLabelsRefs,
     com::atproto::repo::strong_ref::Main,
     types::{string::RecordKey, Union},
 };
@@ -21,17 +20,49 @@ pub fn extract_dt(dt: &atrium_api::Datetime) -> Result<surrealdb::Datetime> {
         .into())
 }
 
-/// Extracts the self labels from a record labels refs
-pub fn extract_self_labels(labels: &Union<RecordLabelsRefs>) -> Option<Vec<String>> {
+/// Extracts the self labels from a profile record labels refs
+pub fn extract_self_labels_profile(
+    labels: &Union<::atrium_api::app::bsky::actor::profile::RecordLabelsRefs>,
+) -> Option<Vec<String>> {
     match labels {
         Union::Refs(refs) => match refs {
-            RecordLabelsRefs::ComAtprotoLabelDefsSelfLabels(labels) => {
+            ::atrium_api::app::bsky::actor::profile::RecordLabelsRefs::ComAtprotoLabelDefsSelfLabels(labels) => {
                 Some(labels.values.iter().map(|l| l.val.clone()).collect())
             }
         },
         Union::Unknown(_) => None,
     }
 }
+
+/// Extracts the self labels from a list record labels refs
+pub fn extract_self_labels_list(
+    labels: &Union<::atrium_api::app::bsky::graph::list::RecordLabelsRefs>,
+) -> Option<Vec<String>> {
+    match labels {
+        Union::Refs(refs) => match refs {
+            ::atrium_api::app::bsky::graph::list::RecordLabelsRefs::ComAtprotoLabelDefsSelfLabels(labels) => {
+                Some(labels.values.iter().map(|l| l.val.clone()).collect())
+            }
+        },
+        Union::Unknown(_) => None,
+    }
+}
+
+/// Extracts the self labels from a record labels refs
+pub fn extract_self_labels_post(
+    labels: &Union<::atrium_api::app::bsky::feed::post::RecordLabelsRefs>,
+) -> Option<Vec<String>> {
+    match labels {
+        Union::Refs(refs) => match refs {
+            ::atrium_api::app::bsky::feed::post::RecordLabelsRefs::ComAtprotoLabelDefsSelfLabels(labels) => {
+                Some(labels.values.iter().map(|l| l.val.clone()).collect())
+            }
+        },
+        Union::Unknown(_) => None,
+    }
+}
+
+// TODO self labels for feed generators and labeller services
 
 /// Converts a DID to a key
 pub fn did_to_key(did: &str) -> Result<String> {

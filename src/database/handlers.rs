@@ -5,12 +5,12 @@ use atrium_api::{
 };
 use chrono::Utc;
 use log::warn;
-use surrealdb::{engine::remote::ws::Client, Surreal};
+use surrealdb::{engine::remote::ws::Client, RecordId, Surreal};
 
 use crate::websocket::events::{Commit, Kind};
 
 use super::{
-    definitions::{BskyProfile, Record},
+    definitions::{BskyFeed, BskyList, BskyProfile, Record},
     delete_record, utils,
 };
 
@@ -103,7 +103,8 @@ async fn on_commit_event_createorupdate(
                 labels: d
                     .labels
                     .as_ref()
-                    .and_then(|d| utils::extract_self_labels(d)),
+                    .and_then(|d| utils::extract_self_labels_profile(d)),
+                extra_data: simd_json::serde::to_string(&d.extra_data)?,
             };
             // TODO this should be a db.upsert(...).merge(...)
             let _: Option<Record> = db.upsert(("did", did_key)).content(profile).await?;
@@ -193,6 +194,44 @@ async fn on_commit_event_createorupdate(
             );
 
             let _ = db.query(query).await?;
+        }
+        KnownRecord::AppBskyFeedGenerator(d) => {
+            let did_key = utils::did_to_key(did.as_str())?;
+            let id = format!("{}_{}", rkey.as_str(), did_key);
+            let feed = BskyFeed {
+                author: RecordId::from_table_key("did", did_key),
+                avatar: None, // TODO implement
+                created_at: utils::extract_dt(&d.created_at)?,
+                description: d.description.clone(),
+                did: d.did.to_string(),
+                display_name: d.display_name.clone(),
+                rkey: rkey.to_string(),
+                uri: format!(
+                    "at://{}/app.bsky.feed.generator/{}",
+                    did.as_str(),
+                    rkey.as_str()
+                ),
+                extra_data: simd_json::serde::to_string(&d.extra_data)?,
+            };
+            let _: Option<Record> = db.upsert(("feed", id)).content(feed).await?;
+        }
+        KnownRecord::AppBskyGraphList(d) => {
+            let did_key = utils::did_to_key(did.as_str())?;
+            let id = format!("{}_{}", rkey.as_str(), did_key);
+
+            let list = BskyList {
+                name: d.name.clone(),
+                avatar: None, // TODO implement
+                created_at: utils::extract_dt(&d.created_at)?,
+                description: d.description.clone(),
+                labels: d
+                    .labels
+                    .as_ref()
+                    .and_then(|d| utils::extract_self_labels_list(d)),
+                purpose: d.purpose.clone(),
+                extra_data: simd_json::serde::to_string(&d.extra_data)?,
+            };
+            let _: Option<Record> = db.upsert(("list", id)).content(list).await?;
         }
         _ => {
             warn!(target: "indexer", "ignored create_or_update {} {} {}",
