@@ -44,7 +44,7 @@ pub struct BskyPost {
     #[serde(rename = "bridgyOriginalUrl")]
     pub bridgy_original_url: Option<String>,
     #[serde(rename = "createdAt")]
-    pub created_at: Option<Datetime>,
+    pub created_at: Datetime,
     pub images: Option<Vec<BskyPostImage>>,
     pub labels: Option<Vec<String>>,
     pub langs: Option<Vec<String>>,
@@ -72,6 +72,19 @@ pub struct BskyPostVideo {
     pub alt: Option<String>,
     #[serde(rename = "aspectRatio")]
     pub aspect_ratio: BskyPostVideoAspectRatio,
+    pub blob: Option<BskyPostVideoBlob>,
+    pub captions: Option<Vec<BskyPostVideoCaption>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BskyPostVideoCaption {}
+
+#[derive(Debug, Serialize)]
+pub struct BskyPostVideoBlob {
+    pub cid: Option<String>,
+    #[serde(rename = "mediaType")]
+    pub media_type: Option<String>,
+    pub size: Option<u64>,
 }
 
 /// Database struct for a bluesky post video aspect ratio
@@ -79,6 +92,31 @@ pub struct BskyPostVideo {
 pub struct BskyPostVideoAspectRatio {
     pub width: Option<u64>,
     pub height: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BskyFeed {
+    pub uri: String,
+    pub author: RecordId,
+    pub rkey: String,
+    pub did: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    pub description: Option<String>,
+    pub avatar: Option<RecordId>,
+    #[serde(rename = "createdAt")]
+    pub created_at: Datetime,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BskyList {
+    pub name: String,
+    pub purpose: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: Datetime,
+    pub description: Option<String>,
+    pub avatar: Option<RecordId>,
+    pub labels: Option<Vec<String>>,
 }
 
 /// Initialize the database with the necessary definitions
