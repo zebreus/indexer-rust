@@ -105,6 +105,7 @@ pub fn at_uri_to_record_id(uri: &str) -> Result<RecordId> {
 
     let table = match u_collection {
         "app.bsky.feed.post" => "post",
+        "app.bsky.feed.generator" => "feed",
         "app.bsky.graph.list" => "list",
         "app.bsky.graph.starterpack" => "starterpack",
         _ => anyhow::bail!("Unsupported URI {}", uri),
