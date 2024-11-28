@@ -10,7 +10,10 @@ use surrealdb::{engine::remote::ws::Client, RecordId, Surreal};
 use crate::websocket::events::{Commit, Kind};
 
 use super::{
-    definitions::{BskyFeed, BskyList, BskyProfile, Record},
+    definitions::{
+        BskyFeed, BskyList, BskyPost, BskyPostImage, BskyPostVideo, BskyProfile,
+        JetstreamAccountEvent, JetstreamIdentityEvent, Record,
+    },
     delete_record, utils,
 };
 
@@ -51,14 +54,34 @@ pub async fn handle_event(db: &Surreal<Client>, event: Kind) -> Result<()> {
             did,
             time_us,
             identity,
-        } => warn!(target: "indexer", "ignored identity event {} {} {:?}",
-                did.as_str(), time_us, identity), // TODO implement
+        } => {
+            let did_key = utils::did_to_key(did.as_str())?;
+            let _: Option<Record> = db
+                .upsert(("jetstream_identity", did_key))
+                .content(JetstreamIdentityEvent {
+                    time_us,
+                    handle: identity.handle.to_string(),
+                    seq: identity.seq,
+                    time: identity.time,
+                })
+                .await?;
+        }
         Kind::KeyEvent {
             did,
             time_us,
             account,
-        } => warn!(target: "indexer", "ignored key event {} {} {:?}",
-                did.as_str(), time_us, account), // TODO implement
+        } => {
+            let did_key = utils::did_to_key(did.as_str())?;
+            let _: Option<Record> = db
+                .upsert(("jetstream_account", did_key))
+                .content(JetstreamAccountEvent {
+                    time_us,
+                    active: account.active,
+                    seq: account.seq,
+                    time: account.time,
+                })
+                .await?;
+        }
     }
 
     Ok(())

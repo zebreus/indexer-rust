@@ -39,6 +39,24 @@ pub struct JetstreamCursor {
     pub time_us: u64,
 }
 
+/// Database struct for a jetstream account event
+#[derive(Debug, Serialize, Deserialize)]
+pub struct JetstreamAccountEvent {
+    pub time_us: u64,
+    pub active: bool,
+    pub seq: u64,
+    pub time: String,
+}
+
+/// Database struct for a jetstream identity event
+#[derive(Debug, Serialize, Deserialize)]
+pub struct JetstreamIdentityEvent {
+    pub time_us: u64,
+    pub handle: String,
+    pub seq: u64,
+    pub time: String,
+}
+
 /// Database struct for a bluesky post
 #[derive(Debug, Serialize)]
 pub struct BskyPost {
