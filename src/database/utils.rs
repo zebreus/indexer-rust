@@ -108,6 +108,7 @@ pub fn at_uri_to_record_id(uri: &str) -> Result<RecordId> {
         "app.bsky.feed.generator" => "feed",
         "app.bsky.graph.list" => "list",
         "app.bsky.graph.starterpack" => "starterpack",
+        "app.bsky.labeler.service"=> "labeler",
         _ => anyhow::bail!("Unsupported URI {}", uri),
     };
 

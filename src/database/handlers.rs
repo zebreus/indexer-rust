@@ -318,7 +318,7 @@ async fn on_commit_event_delete(
             delete_record(db, "starterpack", &id).await?;
         }
         "app.bsky.labeler.service" => {
-            delete_record(db, "app_bsky_labeler_service", &id).await?;
+            delete_record(db, "labeler", &id).await?;
         }
         "chat.bsky.actor.declaration" => {
             delete_record(db, "chat_bsky_actor_declaration", &id).await?;

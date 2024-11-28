@@ -234,7 +234,7 @@ DEFINE FIELD createdAt ON TABLE follow TYPE datetime;
 DEFINE TABLE block SCHEMAFULL TYPE RELATION FROM did TO did;
 DEFINE FIELD createdAt ON TABLE block TYPE datetime;
 
-DEFINE TABLE like SCHEMAFULL TYPE RELATION FROM did TO post|feed|list;
+DEFINE TABLE like SCHEMAFULL TYPE RELATION FROM did TO post|feed|list|starterpack|labeler;
 DEFINE FIELD createdAt ON TABLE like TYPE datetime;
 
 DEFINE TABLE listitem SCHEMAFULL TYPE RELATION FROM list TO did;
