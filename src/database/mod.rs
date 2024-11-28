@@ -58,7 +58,7 @@ pub async fn write_cursor(db: &Surreal<Client>, host: &str, cursor: u64) -> Resu
 
 /// Delete a record from the database
 async fn delete_record(db: &Surreal<Client>, table: &str, key: &str) -> anyhow::Result<()> {
-    let _: Option<()> = db.delete(RecordId::from_table_key(table, key)).await?;
+    let _: Option<Record> = db.delete(RecordId::from_table_key(table, key)).await?;
 
     Ok(())
 }
