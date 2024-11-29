@@ -41,3 +41,4 @@ surrealdb-tikv-client = "0.3.0-surreal.1"
 
 regex = "1.11.1"
 lazy_static = "1.5.0"
+ipld-core = "0.4.1"

@@ -22,7 +22,7 @@ pub struct BskyProfile {
     #[serde(rename = "pinnedPost")]
     pub pinned_post: Option<RecordId>,
     #[serde(rename = "extraData")]
-    pub extra_data: String,
+    pub extra_data: Option<String>,
 }
 
 /// Database struct for a record
@@ -78,7 +78,7 @@ pub struct BskyPost {
     pub via: Option<String>,
     pub video: Option<BskyPostVideo>,
     #[serde(rename = "extraData")]
-    pub extra_data: String,
+    pub extra_data: Option<String>,
 }
 
 /// Database struct for a bluesky post image
@@ -86,6 +86,8 @@ pub struct BskyPost {
 pub struct BskyPostImage {
     pub alt: String,
     pub blob: RecordId,
+    #[serde(rename = "aspectRatio")]
+    pub aspect_ratio: Option<BskyPostMediaAspectRatio>,
 }
 
 /// Database struct for a bluesky post video
@@ -93,8 +95,8 @@ pub struct BskyPostImage {
 pub struct BskyPostVideo {
     pub alt: Option<String>,
     #[serde(rename = "aspectRatio")]
-    pub aspect_ratio: BskyPostVideoAspectRatio,
-    pub blob: Option<BskyPostVideoBlob>,
+    pub aspect_ratio: Option<BskyPostMediaAspectRatio>,
+    pub blob: BskyPostVideoBlob,
     pub captions: Option<Vec<BskyPostVideoCaption>>,
 }
 
@@ -103,17 +105,17 @@ pub struct BskyPostVideoCaption {}
 
 #[derive(Debug, Serialize)]
 pub struct BskyPostVideoBlob {
-    pub cid: Option<String>,
+    pub cid: String,
     #[serde(rename = "mediaType")]
-    pub media_type: Option<String>,
-    pub size: Option<u64>,
+    pub media_type: String,
+    pub size: u64,
 }
 
 /// Database struct for a bluesky post video aspect ratio
 #[derive(Debug, Serialize)]
-pub struct BskyPostVideoAspectRatio {
-    pub width: Option<u64>,
-    pub height: Option<u64>,
+pub struct BskyPostMediaAspectRatio {
+    pub width: u64,
+    pub height: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -129,7 +131,7 @@ pub struct BskyFeed {
     #[serde(rename = "createdAt")]
     pub created_at: Datetime,
     #[serde(rename = "extraData")]
-    pub extra_data: String,
+    pub extra_data: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -142,7 +144,7 @@ pub struct BskyList {
     pub avatar: Option<RecordId>,
     pub labels: Option<Vec<String>>,
     #[serde(rename = "extraData")]
-    pub extra_data: String,
+    pub extra_data: Option<String>,
 }
 
 /// Initialize the database with the necessary definitions
@@ -175,7 +177,7 @@ DEFINE FIELD joinedViaStarterPack ON TABLE did TYPE option<record<starterpack>>;
 DEFINE FIELD pinnedPost ON TABLE did TYPE option<record<post>>;
 DEFINE FIELD createdAt ON TABLE did TYPE option<datetime>;
 DEFINE FIELD seenAt ON TABLE did TYPE datetime;
-DEFINE FIELD extraData ON TABLE feed TYPE option<string>;
+DEFINE FIELD extraData ON TABLE did TYPE option<string>;
 
 DEFINE TABLE post SCHEMAFULL;
 DEFINE FIELD author ON TABLE post TYPE record<did>;
@@ -185,6 +187,9 @@ DEFINE FIELD images ON TABLE post TYPE option<array>;
 DEFINE FIELD images.* ON TABLE post TYPE object;
 DEFINE FIELD images.*.alt ON TABLE post TYPE string;
 DEFINE FIELD images.*.blob ON TABLE post TYPE record<blob>;
+DEFINE FIELD images.*.aspectRatio ON TABLE post TYPE option<object>;
+DEFINE FIELD images.*.aspectRatio.height ON TABLE post TYPE option<int>;
+DEFINE FIELD images.*.aspectRatio.width ON TABLE post TYPE option<int>;
 DEFINE FIELD labels ON TABLE post TYPE option<array<string>>;
 DEFINE FIELD langs ON TABLE post TYPE option<array<string>>;
 DEFINE FIELD links ON TABLE post TYPE option<array<string>>;
@@ -205,7 +210,7 @@ DEFINE FIELD video.blob.cid ON TABLE post TYPE option<string>;
 DEFINE FIELD video.blob.mediaType ON TABLE post TYPE option<string>;
 DEFINE FIELD video.blob.size ON TABLE post TYPE option<int>;
 DEFINE FIELD video.captions ON TABLE post TYPE option<array<object>>;
-DEFINE FIELD extraData ON TABLE feed TYPE option<string>;
+DEFINE FIELD extraData ON TABLE post TYPE option<string>;
 
 DEFINE TABLE feed SCHEMAFULL;
 DEFINE FIELD uri ON TABLE feed TYPE string;
@@ -225,7 +230,7 @@ DEFINE FIELD createdAt ON TABLE list TYPE datetime;
 DEFINE FIELD description ON TABLE list TYPE option<string>;
 DEFINE FIELD avatar ON TABLE list TYPE option<record<blob>>;
 DEFINE FIELD labels ON TABLE list TYPE option<array<string>>;
-DEFINE FIELD extraData ON TABLE feed TYPE option<string>;
+DEFINE FIELD extraData ON TABLE list TYPE option<string>;
 
 
 DEFINE TABLE follow SCHEMAFULL TYPE RELATION FROM did TO did;

@@ -1,7 +1,12 @@
 use anyhow::Result;
+use atrium_api::app::bsky::richtext::facet::MainFeaturesItem;
 use atrium_api::{
+    app::bsky::embed::video,
     record::KnownRecord,
-    types::string::{Did, RecordKey},
+    types::{
+        string::{Did, RecordKey},
+        Blob, BlobRef,
+    },
 };
 use chrono::Utc;
 use log::warn;
@@ -11,10 +16,11 @@ use crate::websocket::events::{Commit, Kind};
 
 use super::{
     definitions::{
-        BskyFeed, BskyList, BskyPost, BskyPostImage, BskyPostVideo, BskyProfile,
-        JetstreamAccountEvent, JetstreamIdentityEvent, Record,
+        BskyFeed, BskyList, BskyPost, BskyPostImage, BskyPostMediaAspectRatio, BskyPostVideo,
+        BskyPostVideoBlob, BskyProfile, JetstreamAccountEvent, JetstreamIdentityEvent, Record,
     },
-    delete_record, utils,
+    delete_record,
+    utils::{self, at_uri_to_record_id, blob_ref_to_record_id, did_to_key},
 };
 
 /// Handle a new websocket event on the database
@@ -101,6 +107,11 @@ async fn on_commit_event_createorupdate(
 ) -> Result<()> {
     utils::ensure_valid_rkey(rkey.to_string())?;
     match record {
+        // TODO chat.bsky.actor.declaration
+        // TODO app.bsky.feed.postgate
+        // TODO app.bsky.feed.threadgate
+        // TODO app.bsky.graph.starterpack
+        // TODO app.bsky.labeler.service
         KnownRecord::AppBskyActorProfile(d) => {
             // NOTE: using .ok() here isn't optimal, incorrect data should
             // probably not be entered into the database at all, but for now
@@ -119,6 +130,7 @@ async fn on_commit_event_createorupdate(
                     .joined_via_starter_pack
                     .as_ref()
                     .and_then(|d| utils::strong_ref_to_record_id(d).ok()),
+                // TODO if strong_ref_to_record_id fails, it should return an error result instead of being empty
                 pinned_post: d
                     .pinned_post
                     .as_ref()
@@ -127,7 +139,7 @@ async fn on_commit_event_createorupdate(
                     .labels
                     .as_ref()
                     .and_then(|d| utils::extract_self_labels_profile(d)),
-                extra_data: simd_json::serde::to_string(&d.extra_data)?,
+                extra_data: process_extra_data(&d.extra_data)?,
             };
             // TODO this should be a db.upsert(...).merge(...)
             let _: Option<Record> = db.upsert(("did", did_key)).content(profile).await?;
@@ -234,7 +246,7 @@ async fn on_commit_event_createorupdate(
                     did.as_str(),
                     rkey.as_str()
                 ),
-                extra_data: simd_json::serde::to_string(&d.extra_data)?,
+                extra_data: process_extra_data(&d.extra_data)?,
             };
             let _: Option<Record> = db.upsert(("feed", id)).content(feed).await?;
         }
@@ -252,9 +264,184 @@ async fn on_commit_event_createorupdate(
                     .as_ref()
                     .and_then(|d| utils::extract_self_labels_list(d)),
                 purpose: d.purpose.clone(),
-                extra_data: simd_json::serde::to_string(&d.extra_data)?,
+                extra_data: process_extra_data(&d.extra_data)?,
             };
             let _: Option<Record> = db.upsert(("list", id)).content(list).await?;
+        }
+        KnownRecord::AppBskyFeedPost(d) => {
+            let did_key = utils::did_to_key(did.as_str())?;
+            let id = format!("{}_{}", rkey.as_str(), did_key);
+
+            let mut images: Vec<BskyPostImage> = vec![];
+            let mut links: Vec<String> = vec![];
+            let mut mentions: Vec<RecordId> = vec![];
+            let mut record: Option<RecordId> = None;
+            let mut tags: Vec<String> = vec![];
+            let mut video: Option<BskyPostVideo> = None;
+
+            let mut post_images: Vec<atrium_api::app::bsky::embed::images::Image> = vec![];
+
+            match &d.embed {
+                Some(d) => {
+                    match d {
+                        atrium_api::types::Union::Refs(e) => {
+                            match e {
+                          atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedExternalMain(m)=>{
+                            // TODO index preview too
+                            links.push(m.external.uri.clone());
+                          },
+                            atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedImagesMain(m) => {
+                              post_images=m.images.clone();
+                            },
+                            atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedVideoMain(m) => {
+                              video = Some(process_video(m)?);
+                            },
+                            atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedRecordMain(m) => {
+                              record = Some(at_uri_to_record_id(&m.record.uri)?);
+                            },
+                            atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedRecordWithMediaMain(m) => {
+                              record = Some(at_uri_to_record_id(&m.record.record.uri)?);
+
+                              match &m.media{
+                                atrium_api::types::Union::Refs(r)=>match r{
+                                  atrium_api::app::bsky::embed::record_with_media::MainMediaRefs::AppBskyEmbedExternalMain(m)=>{
+                                    // TODO index preview too
+                                    links.push(m.external.uri.clone());
+                                  }
+                                  atrium_api::app::bsky::embed::record_with_media::MainMediaRefs::AppBskyEmbedImagesMain(m)=>{
+                                    post_images=m.images.clone();
+                                  }
+                                  atrium_api::app::bsky::embed::record_with_media::MainMediaRefs::AppBskyEmbedVideoMain(m)=>{
+
+                                    video = Some(process_video(m)?);
+                                  }
+                                }
+                                atrium_api::types::Union::Unknown(_)=>{}
+                              }
+                            },
+                        }
+                        }
+                        atrium_api::types::Union::Unknown(_) => {}
+                    }
+                }
+                None => {}
+            };
+
+            if !post_images.is_empty() {
+                for i in post_images {
+                    images.push(BskyPostImage {
+                        alt: i.alt.clone(),
+                        blob: blob_ref_to_record_id(&i.image), // TODO store blob details
+                        aspect_ratio: i.aspect_ratio.as_ref().map(|a| BskyPostMediaAspectRatio {
+                            height: a.height.into(),
+                            width: a.width.into(),
+                        }),
+                    })
+                }
+            }
+
+            if let Some(r) = &record {
+                if r.table() == "post" {
+                    let query = format!(
+                        "RELATE post:{}->quotes->post:{} SET id = '{}';",
+                        id,
+                        r.key(),
+                        id
+                    );
+
+                    let _ = db.query(query).await?;
+                }
+            }
+
+            if let Some(facets) = &d.facets {
+                for facet in facets {
+                    for feature in &facet.features {
+                        match feature {
+                            atrium_api::types::Union::Refs(refs) => match refs {
+                                MainFeaturesItem::Mention(m) => {
+                                    mentions.push(("did", did_to_key(m.did.as_str())?).into());
+                                }
+                                MainFeaturesItem::Link(l) => {
+                                    links.push(l.uri.clone());
+                                }
+                                MainFeaturesItem::Tag(t) => {
+                                    tags.push(t.tag.clone());
+                                }
+                            },
+                            atrium_api::types::Union::Unknown(_) => {}
+                        }
+                    }
+                }
+            }
+
+            if let Some(t) = &d.tags {
+                tags.extend(t.clone());
+            }
+
+            let post = BskyPost {
+                author: RecordId::from_table_key("did", did_key.clone()),
+                bridgy_original_url: None,
+                via: None,
+                created_at: utils::extract_dt(&d.created_at)?,
+                labels: d
+                    .labels
+                    .as_ref()
+                    .and_then(|d| utils::extract_self_labels_post(d)),
+                text: d.text.clone(),
+                langs: d
+                    .langs
+                    .as_ref()
+                    .map(|d| d.iter().map(|l| l.as_ref().to_string()).collect()),
+                root: d
+                    .reply
+                    .as_ref()
+                    .map(|r| utils::strong_ref_to_record_id(&r.root))
+                    .transpose()?,
+                parent: d
+                    .reply
+                    .as_ref()
+                    .map(|r| utils::strong_ref_to_record_id(&r.parent))
+                    .transpose()?,
+                video: video,
+                tags: if tags.is_empty() { None } else { Some(tags) },
+                links: if links.is_empty() { None } else { Some(links) },
+                mentions: if mentions.is_empty() {
+                    None
+                } else {
+                    Some(mentions)
+                },
+                record: record,
+                images: if images.is_empty() {
+                    None
+                } else {
+                    Some(images)
+                },
+                extra_data: process_extra_data(&d.extra_data)?,
+            };
+            let parent = post.parent.clone();
+            let _: Option<Record> = db.upsert(("post", id.clone())).content(post).await?;
+
+            if parent.is_some() {
+                let query1 = format!(
+                    "RELATE did:{}->replies->post:{} SET id = '{}';",
+                    did_key, id, id
+                );
+                let _ = db.query(query1).await?;
+
+                let query2 = format!(
+                    "RELATE post:{}->replyto->{} SET id = '{}';",
+                    id,
+                    parent.unwrap(),
+                    id
+                );
+                let _ = db.query(query2).await?;
+            } else {
+                let query = format!(
+                    "RELATE did:{}->posts->post:{} SET id = '{}';",
+                    did_key, id, id
+                );
+                let _ = db.query(query).await?;
+            }
         }
         _ => {
             warn!(target: "indexer", "ignored create_or_update {} {} {}",
@@ -263,6 +450,32 @@ async fn on_commit_event_createorupdate(
     }
 
     Ok(())
+}
+
+fn process_video(vid: &video::Main) -> Result<BskyPostVideo> {
+    let blob = extract_video_blob(&vid.video)?;
+    let v = BskyPostVideo {
+        alt: vid.alt.clone(),
+        aspect_ratio: vid.aspect_ratio.clone().map(|a| BskyPostMediaAspectRatio {
+            height: a.height.into(),
+            width: a.width.into(),
+        }),
+        blob: BskyPostVideoBlob {
+            cid: blob.r#ref.0.to_string(),
+            media_type: blob.mime_type,
+            size: blob.size as u64,
+        },
+        captions: None, // TODO implement
+    };
+    Ok(v)
+}
+fn extract_video_blob(blob: &BlobRef) -> Result<Blob> {
+    match blob {
+        atrium_api::types::BlobRef::Typed(a) => match a {
+            atrium_api::types::TypedBlobRef::Blob(b) => Ok(b.clone()),
+        },
+        atrium_api::types::BlobRef::Untyped(_) => anyhow::bail!("Invalid blob ref type"),
+    }
 }
 
 /// If the new commit is a delete, handle it
@@ -330,4 +543,9 @@ async fn on_commit_event_delete(
     }
 
     Ok(())
+}
+
+fn process_extra_data(ipld: &ipld_core::ipld::Ipld) -> Result<Option<String>> {
+    let str = simd_json::serde::to_string(ipld)?;
+    Ok(if str == "{}" { None } else { Some(str) })
 }

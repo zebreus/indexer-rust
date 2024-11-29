@@ -1,6 +1,6 @@
 use ::atrium_api::{
     com::atproto::repo::strong_ref::Main,
-    types::{string::RecordKey, Union},
+    types::{string::RecordKey, BlobRef, TypedBlobRef, Union},
 };
 use anyhow::{Context, Result};
 use atrium_api::types::string as atrium_api;
@@ -108,7 +108,7 @@ pub fn at_uri_to_record_id(uri: &str) -> Result<RecordId> {
         "app.bsky.feed.generator" => "feed",
         "app.bsky.graph.list" => "list",
         "app.bsky.graph.starterpack" => "starterpack",
-        "app.bsky.labeler.service"=> "labeler",
+        "app.bsky.labeler.service" => "labeler",
         _ => anyhow::bail!("Unsupported URI {}", uri),
     };
 
@@ -132,4 +132,13 @@ pub fn ensure_valid_rkey(rkey: String) -> Result<()> {
         anyhow::bail!("Provided rkey is not valid!");
     }
     Ok(())
+}
+
+pub fn blob_ref_to_record_id(blob: &BlobRef) -> RecordId {
+    match blob {
+        BlobRef::Typed(a) => match a {
+            TypedBlobRef::Blob(b) => RecordId::from_table_key("blob", b.r#ref.0.to_string()),
+        },
+        BlobRef::Untyped(a) => RecordId::from_table_key("blob", a.cid.clone()),
+    }
 }
