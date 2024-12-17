@@ -107,11 +107,6 @@ async fn on_commit_event_createorupdate(
 ) -> Result<()> {
     utils::ensure_valid_rkey(rkey.to_string())?;
     match record {
-        // TODO chat.bsky.actor.declaration
-        // TODO app.bsky.feed.postgate
-        // TODO app.bsky.feed.threadgate
-        // TODO app.bsky.graph.starterpack
-        // TODO app.bsky.labeler.service
         KnownRecord::AppBskyActorProfile(d) => {
             // NOTE: using .ok() here isn't optimal, incorrect data should
             // probably not be entered into the database at all, but for now
@@ -267,6 +262,46 @@ async fn on_commit_event_createorupdate(
                 extra_data: process_extra_data(&d.extra_data)?,
             };
             let _: Option<Record> = db.upsert(("list", id)).content(list).await?;
+        }
+        KnownRecord::AppBskyFeedThreadgate(d) => {
+            let did_key = utils::did_to_key(did.as_str())?;
+            let id = format!("{}_{}", rkey.as_str(), did_key);
+            let _: Option<Record> = db
+                .upsert(("lex_app_bsky_feed_threadgate", id))
+                .content(d)
+                .await?;
+        }
+        KnownRecord::AppBskyGraphStarterpack(d) => {
+            let did_key = utils::did_to_key(did.as_str())?;
+            let id = format!("{}_{}", rkey.as_str(), did_key);
+            let _: Option<Record> = db
+                .upsert(("lex_app_bsky_graph_starterpack", id))
+                .content(d)
+                .await?;
+        }
+        KnownRecord::AppBskyFeedPostgate(d) => {
+            let did_key = utils::did_to_key(did.as_str())?;
+            let id = format!("{}_{}", rkey.as_str(), did_key);
+            let _: Option<Record> = db
+                .upsert(("lex_app_bsky_feed_postgate", id))
+                .content(d)
+                .await?;
+        }
+        KnownRecord::ChatBskyActorDeclaration(d) => {
+            let did_key = utils::did_to_key(did.as_str())?;
+            let id = format!("{}_{}", rkey.as_str(), did_key);
+            let _: Option<Record> = db
+                .upsert(("lex_chat_bsky_actor_declaration", id))
+                .content(d)
+                .await?;
+        }
+        KnownRecord::AppBskyLabelerService(d) => {
+            let did_key = utils::did_to_key(did.as_str())?;
+            let id = format!("{}_{}", rkey.as_str(), did_key);
+            let _: Option<Record> = db
+                .upsert(("lex_app_bsky_labeler_service", id))
+                .content(d)
+                .await?;
         }
         KnownRecord::AppBskyFeedPost(d) => {
             let did_key = utils::did_to_key(did.as_str())?;
