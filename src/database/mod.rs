@@ -1,28 +1,21 @@
 use anyhow::{Context, Result};
 use definitions::{JetstreamCursor, Record};
 use log::{debug, info};
-use surrealdb::{
-    engine::remote::ws::{Client, Ws},
-    opt::auth::Root,
-    RecordId, Surreal,
-};
+use surrealdb::{engine::any::Any, opt::auth::Root, RecordId, Surreal};
 
-mod definitions;
+pub mod definitions;
 pub mod handlers;
 mod utils;
 
 /// Connect to the database
 pub async fn connect(
-    dbhost: String,
+    db_endpoint: String,
     username: &str,
     password: &str,
-) -> anyhow::Result<Surreal<Client>> {
+) -> anyhow::Result<Surreal<Any>> {
     // connect to the database
-    info!(target: "indexer", "Connecting to the database at {}", dbhost);
-    let db: Surreal<Client> = Surreal::init();
-    db.connect::<Ws>(&dbhost)
-        .await
-        .with_context(|| format!("Unable to open database connection to {}", dbhost))?;
+    info!(target: "indexer", "Connecting to the database at {}", db_endpoint);
+    let db = surrealdb::engine::any::connect(db_endpoint).await?;
 
     // sign in to the server
     debug!(target: "indexer", "Signing in as {}", username);
@@ -38,14 +31,14 @@ pub async fn connect(
 }
 
 /// Fetch the current cursor from the database
-pub async fn fetch_cursor(db: &Surreal<Client>, host: &str) -> Result<Option<JetstreamCursor>> {
+pub async fn fetch_cursor(db: &Surreal<Any>, host: &str) -> Result<Option<JetstreamCursor>> {
     let res: Option<JetstreamCursor> = db.select(("cursor", host)).await?;
 
     Ok(res)
 }
 
 /// Write the cursor to the database
-pub async fn write_cursor(db: &Surreal<Client>, host: &str, cursor: u64) -> Result<()> {
+pub async fn write_cursor(db: &Surreal<Any>, host: &str, cursor: u64) -> Result<()> {
     let _: Option<Record> = db
         .upsert(("cursor", host))
         .content(JetstreamCursor {
@@ -57,7 +50,7 @@ pub async fn write_cursor(db: &Surreal<Client>, host: &str, cursor: u64) -> Resu
 }
 
 /// Delete a record from the database
-async fn delete_record(db: &Surreal<Client>, table: &str, key: &str) -> anyhow::Result<()> {
+async fn delete_record(db: &Surreal<Any>, table: &str, key: &str) -> anyhow::Result<()> {
     let _: Option<Record> = db.delete(RecordId::from_table_key(table, key)).await?;
 
     Ok(())

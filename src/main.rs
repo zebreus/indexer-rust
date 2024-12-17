@@ -62,7 +62,7 @@ fn main() {
 /// Asynchronous main function
 async fn application_main(args: Args) -> anyhow::Result<()> {
     // connect to the database
-    let db = database::connect(args.dbhost, &args.username, &args.password)
+    let db = database::connect(args.db, &args.username, &args.password)
         .await
         .context("Failed to connect to the database")?;
 

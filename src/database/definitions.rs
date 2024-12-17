@@ -1,7 +1,7 @@
 use anyhow::Context;
 use log::debug;
 use serde::{Deserialize, Serialize};
-use surrealdb::{engine::remote::ws::Client, Datetime, RecordId, Surreal};
+use surrealdb::{engine::any::Any, Datetime, RecordId, Surreal};
 
 /// Database struct for a bluesky profile
 #[derive(Debug, Serialize)]
@@ -148,7 +148,7 @@ pub struct BskyList {
 }
 
 /// Initialize the database with the necessary definitions
-pub async fn init(db: &Surreal<Client>) -> anyhow::Result<()> {
+pub async fn init(db: &Surreal<Any>) -> anyhow::Result<()> {
     // define the namespace
     debug!(target: "indexer", "Defining namespace");
     db.query("DEFINE NAMESPACE atp;")

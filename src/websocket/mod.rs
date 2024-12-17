@@ -13,7 +13,7 @@ use fastwebsockets::{OpCode, WebSocket};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use log::{debug, error, info, trace, warn};
-use surrealdb::{engine::remote::ws::Client, Surreal};
+use surrealdb::{engine::any::Any, Surreal};
 use tokio::{runtime::Builder, time::sleep};
 
 mod conn;
@@ -25,7 +25,7 @@ mod handler;
 struct SharedState {
     host: String,
     rx: Arc<Mutex<Receiver<(String, bool)>>>,
-    db: Surreal<Client>,
+    db: Surreal<Any>,
     cursor: AtomicU64,
 }
 
@@ -42,7 +42,7 @@ pub async fn start(
     certificate: String,
     cursor: u64,
     handlers: Option<usize>,
-    db: Surreal<Client>,
+    db: Surreal<Any>,
 ) -> anyhow::Result<()> {
     // create a shared state
     info!(target: "indexer", "Entering websocket loop");

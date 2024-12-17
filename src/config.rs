@@ -18,9 +18,9 @@ pub struct Args {
     /// Override threadpool size for message parsing
     #[arg(short = 'l', long)]
     pub handlers: Option<usize>,
-    /// Address of the database server (including port)
-    #[arg(short = 'D', long, default_value = "127.0.0.1:8000")]
-    pub dbhost: String,
+    /// Endpoint of the database server (including port and protocol)
+    #[arg(short = 'D', long, default_value = "ws://127.0.0.1:8000")]
+    pub db: String,
     /// Username for the database server
     #[arg(short, long, default_value = "root")]
     pub username: String,

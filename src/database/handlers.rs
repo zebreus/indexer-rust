@@ -10,7 +10,7 @@ use atrium_api::{
 };
 use chrono::Utc;
 use log::warn;
-use surrealdb::{engine::remote::ws::Client, RecordId, Surreal};
+use surrealdb::{engine::any::Any, RecordId, Surreal};
 
 use crate::websocket::events::{Commit, Kind};
 
@@ -24,7 +24,7 @@ use super::{
 };
 
 /// Handle a new websocket event on the database
-pub async fn handle_event(db: &Surreal<Client>, event: Kind) -> Result<()> {
+pub async fn handle_event(db: &Surreal<Any>, event: Kind) -> Result<()> {
     // Handle event types
     match event {
         Kind::CommitEvent {
@@ -94,8 +94,8 @@ pub async fn handle_event(db: &Surreal<Client>, event: Kind) -> Result<()> {
 }
 
 /// If the new commit is a create or update, handle it
-async fn on_commit_event_createorupdate(
-    db: &Surreal<Client>,
+pub async fn on_commit_event_createorupdate(
+    db: &Surreal<Any>,
     did: Did,
     _time_us: u64,
     did_key: String,
@@ -515,7 +515,7 @@ fn extract_video_blob(blob: &BlobRef) -> Result<Blob> {
 
 /// If the new commit is a delete, handle it
 async fn on_commit_event_delete(
-    db: &Surreal<Client>,
+    db: &Surreal<Any>,
     did: Did,
     _time_us: u64,
     _did_key: String,
