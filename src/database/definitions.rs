@@ -1,5 +1,5 @@
 use anyhow::Context;
-use log::debug;
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use surrealdb::{engine::any::Any, Datetime, RecordId, Surreal};
 

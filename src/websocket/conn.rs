@@ -9,7 +9,7 @@ use hyper::{
     Request,
 };
 use hyper_util::rt::TokioIo;
-use log::debug;
+use log::{debug, info};
 use tokio::{net::TcpStream, task};
 use tokio_rustls::{
     rustls::{
@@ -32,25 +32,7 @@ where
     }
 }
 
-/// List of supported nsids
-const NSIDS: [&str; 15] = [
-    "app.bsky.actor.profile",
-    "app.bsky.feed.generator",
-    "app.bsky.feed.like",
-    "app.bsky.feed.post",
-    "app.bsky.feed.postgate",
-    "app.bsky.feed.repost",
-    "app.bsky.feed.threadgate",
-    "app.bsky.graph.block",
-    "app.bsky.graph.follow",
-    "app.bsky.graph.list",
-    "app.bsky.graph.listblock",
-    "app.bsky.graph.listitem",
-    "app.bsky.graph.starterpack",
-    "app.bsky.labeler.service",
-    "chat.bsky.actor.declaration",
-];
-
+// TODO perf: use the zstd-compressed jetstream
 /// Connect to a websocket server
 pub async fn connect_tls(
     host: &String,
@@ -88,11 +70,11 @@ pub async fn connect_tls(
 
     // build uri
     let uri = format!(
-        "wss://{}/subscribe?wantedCollections={}{}",
+        "wss://{}/subscribe?maxMessageSizeBytes=1048576{}",
         host,
-        NSIDS.join("&wantedCollections="),
         cursor.map_or_else(|| String::new(), |c| format!("&cursor={}", c))
     );
+    info!(target: "indexer", "Connecting to {}", uri);
 
     // upgrade the connection to a websocket
     debug!(target: "indexer", "Upgrading connection to websocket: {}", &uri);

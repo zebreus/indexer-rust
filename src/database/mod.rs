@@ -5,6 +5,7 @@ use surrealdb::{engine::any::Any, opt::auth::Root, RecordId, Surreal};
 
 pub mod definitions;
 pub mod handlers;
+pub mod repo_indexer;
 mod utils;
 
 /// Connect to the database
@@ -18,10 +19,6 @@ pub async fn connect(
     let db = surrealdb::engine::any::connect(db_endpoint).await?;
 
     // sign in to the server
-    debug!(target: "indexer", "Signing in as {}", username);
-    db.signin(Root { username, password })
-        .await
-        .with_context(|| format!("Failed to sign in as {}", username))?;
 
     definitions::init(&db)
         .await

@@ -42,10 +42,8 @@ pub async fn handle_event(db: &Surreal<Any>, event: Kind) -> Result<()> {
                     record,
                     cid,
                 } => {
-                    on_commit_event_createorupdate(
-                        db, did, time_us, did_key, rev, collection, rkey, record, cid,
-                    )
-                    .await?
+                    on_commit_event_createorupdate(db, did, did_key, collection, rkey, record)
+                        .await?
                 }
                 Commit::Delete {
                     rev,
@@ -97,13 +95,10 @@ pub async fn handle_event(db: &Surreal<Any>, event: Kind) -> Result<()> {
 pub async fn on_commit_event_createorupdate(
     db: &Surreal<Any>,
     did: Did,
-    _time_us: u64,
     did_key: String,
-    _rev: String,
     collection: String,
     rkey: RecordKey,
     record: KnownRecord,
-    _cid: String,
 ) -> Result<()> {
     utils::ensure_valid_rkey(rkey.to_string())?;
     match record {

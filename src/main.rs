@@ -1,8 +1,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ::log::error;
+use ::log::{error, info};
 use anyhow::Context;
 use config::Args;
+use database::repo_indexer::start_full_repo_indexer;
+use surrealdb::{engine::any::Any, Surreal};
 use tokio::runtime::Builder;
 use tokio_rustls::rustls::crypto::aws_lc_rs::default_provider;
 
@@ -25,7 +27,7 @@ fn main() {
     args.dump();
 
     // build async runtime
-    let rt = if let Some(threads) = args.executors {
+    let rt = if let Some(threads) = args.worker_threads {
         Builder::new_multi_thread()
             .enable_all()
             .worker_threads(threads)
@@ -66,14 +68,60 @@ async fn application_main(args: Args) -> anyhow::Result<()> {
         .await
         .context("Failed to connect to the database")?;
 
+    let jetstream_hosts = vec![
+        "jetstream1.us-west.bsky.network",
+        "jetstream2.us-east.bsky.network",
+        "test-jetstream.skyfeed.moe",
+        "jetstream2.us-west.bsky.network",
+        "jetstream1.us-east.bsky.network",
+    ];
+
+    for host in jetstream_hosts {
+        let db_clone = db.clone();
+        let certificate = args.certificate.clone();
+
+        tokio::spawn(async move {
+            start_jetstream_consumer(db_clone, host.to_string(), certificate)
+                .await
+                .context("jetstream consumer failed")
+                .unwrap();
+        });
+    }
+
+    let db_clone = db.clone();
+    tokio::spawn(async move {
+        loop {
+            let mut res = db_clone
+                .query("SELECT count() as c FROM li_did GROUP ALL;")
+                .await
+                .unwrap();
+            let count: Option<i64> = res.take((0, "c")).unwrap();
+            info!("fully indexed repo count: {:?}", count);
+            tokio::time::sleep(std::time::Duration::from_millis(10000)).await;
+        }
+    });
+
+    if args.mode == "full" {
+        start_full_repo_indexer(db, args.max_tasks.unwrap_or(num_cpus::get() * 50)).await?;
+    }
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+async fn start_jetstream_consumer(
+    db: Surreal<Any>,
+    host: String,
+    certificate: String,
+) -> anyhow::Result<()> {
     // fetch initial cursor
-    let cursor = database::fetch_cursor(&db, &args.host)
+    let cursor = database::fetch_cursor(&db, &host)
         .await
         .context("Failed to fetch cursor from database")?
         .map_or(0, |e| e.time_us);
 
     // enter websocket event loop
-    websocket::start(args.host, args.certificate, cursor, args.handlers, db)
+    websocket::start(host, certificate, cursor, db)
         .await
         .context("WebSocket event loop failed")?;
 

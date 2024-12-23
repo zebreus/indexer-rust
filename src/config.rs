@@ -6,20 +6,17 @@ use log::{info, LevelFilter};
 #[derive(Parser, Debug)]
 #[command(about)]
 pub struct Args {
-    /// Host address of the jetstream server
-    #[arg(short = 'H', long, default_value = "jetstream2.us-east.bsky.network")]
-    pub host: String,
     /// Certificate to check jetstream server against
     #[arg(short = 'c', long, default_value = "/etc/ssl/certs/ISRG_Root_X1.pem")]
     pub certificate: String,
-    /// Override threadpool size for async operations
-    #[arg(short = 'a', long)]
-    pub executors: Option<usize>,
-    /// Override threadpool size for message parsing
-    #[arg(short = 'l', long)]
-    pub handlers: Option<usize>,
+    /// Override tokio threadpool size for async operations
+    #[arg(long)]
+    pub worker_threads: Option<usize>,
+    /// Override parallel task count for full repo index operations
+    #[arg(long)]
+    pub max_tasks: Option<usize>,
     /// Endpoint of the database server (including port and protocol)
-    #[arg(short = 'D', long, default_value = "ws://127.0.0.1:8000")]
+    #[arg(short = 'D', long, default_value = "rocksdb://path/to/surreal.db")]
     pub db: String,
     /// Username for the database server
     #[arg(short, long, default_value = "root")]
@@ -30,6 +27,9 @@ pub struct Args {
     /// Debug verbosity level
     #[arg(short, action = ArgAction::Count)]
     pub verbosity: u8,
+    /// Indexer Mode (jetstream only or full)
+    #[arg(long, default_value = "jetstream")]
+    pub mode: String,
 }
 
 impl Args {
@@ -37,21 +37,20 @@ impl Args {
     pub fn dump(self: &Self) {
         // dump configuration
         info!("{}", "Configuration:".bold().underline().blue());
-        info!("{}: {}", "Host".cyan(), self.host.green());
         info!("{}: {}", "Certificate".cyan(), self.certificate.green());
         info!(
             "{}: {}",
-            "Executors".cyan(),
-            self.executors.map_or_else(
+            "Worker Threads".cyan(),
+            self.worker_threads.map_or_else(
                 || "Not set, using CPU count".yellow(),
                 |v| v.to_string().green()
             )
         );
         info!(
             "{}: {}",
-            "Handlers".cyan(),
-            self.handlers.map_or_else(
-                || "Not set, using CPU count".yellow(),
+            "Max tasks".cyan(),
+            self.max_tasks.map_or_else(
+                || "Not set, using CPU count times 32".yellow(),
                 |v| v.to_string().green()
             )
         );

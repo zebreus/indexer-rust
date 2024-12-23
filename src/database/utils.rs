@@ -91,6 +91,14 @@ pub fn did_to_key_impl(did: &str, full: bool) -> Result<String> {
     }
 }
 
+pub fn unsafe_user_key_to_did(key: &str) -> String {
+    // TODO replace this implementation with something better
+    key.replace("web_", "did:web:")
+        .replace("plc_", "did:plc:")
+        .replace("__", "-")
+        .replace("_", ".")
+}
+
 /// Converts a strong ref to a record ID
 pub fn strong_ref_to_record_id(sr: &Main) -> Result<RecordId> {
     Ok(at_uri_to_record_id(&sr.uri).context("Unable to convert strong ref to record id")?)
