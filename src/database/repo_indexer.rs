@@ -14,19 +14,12 @@ use std::{
     sync::Arc,
 };
 use surrealdb::{engine::any::Any, Surreal};
-use tokio::sync::{
-    mpsc::{self, Receiver},
-    Mutex,
-};
 
 pub async fn start_full_repo_indexer(db: Surreal<Any>, max_tasks: usize) -> anyhow::Result<()> {
     let mut processed_dids: BTreeSet<String> = BTreeSet::new();
-    let (tx, rx) = mpsc::channel(10000);
+    let (tx, rx) = async_channel::bounded(10_000);
 
-    let state = Arc::new(SharedState {
-        rx: Arc::new(Mutex::new(rx)),
-        db,
-    });
+    let state = Arc::new(SharedState { rx: rx, db });
 
     info!(target: "indexer", "Spinning up {} handler tasks", max_tasks);
 
@@ -107,7 +100,7 @@ struct BskyFollowRes {
 
 #[derive(Debug)]
 struct SharedState {
-    rx: Arc<Mutex<Receiver<String>>>,
+    rx: async_channel::Receiver<String>,
     db: Surreal<Any>,
 }
 
@@ -116,7 +109,7 @@ async fn thread_handler(state: Arc<SharedState>) -> anyhow::Result<()> {
     loop {
         // get the next repo to be indexed
         let did = {
-            let x = state.rx.lock().await.recv().await;
+            let x = state.rx.recv().await;
             x.unwrap()
         };
 
