@@ -80,12 +80,22 @@ async fn application_main(args: Args) -> anyhow::Result<()> {
         let db_clone = db.clone();
         let certificate = args.certificate.clone();
 
-        tokio::spawn(async move {
-            start_jetstream_consumer(db_clone, host.to_string(), certificate)
-                .await
-                .context("jetstream consumer failed")
-                .unwrap();
-        });
+        std::thread::Builder::new()
+            .name(format!("Jetstream Consumer {}", host))
+            .spawn(move || {
+                Builder::new_current_thread()
+                    .enable_io()
+                    .enable_time()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        start_jetstream_consumer(db_clone, host.to_string(), certificate)
+                            .await
+                            .context("jetstream consumer failed")
+                            .unwrap();
+                    });
+            })
+            .context("Failed to spawn jetstream consumer thread")?;
     }
 
     let db_clone = db.clone();
