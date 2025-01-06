@@ -31,6 +31,8 @@ fn main() {
         Builder::new_multi_thread()
             .enable_all()
             .worker_threads(threads)
+            .max_blocking_threads(512 * 512)
+            .max_io_events_per_tick(1024 * 512)
             .thread_name_fn(|| {
                 static ATOMIC: AtomicUsize = AtomicUsize::new(0);
                 let id = ATOMIC.fetch_add(1, Ordering::Relaxed);
@@ -41,6 +43,8 @@ fn main() {
     } else {
         Builder::new_multi_thread()
             .enable_all()
+            .max_blocking_threads(512 * 512)
+            .max_io_events_per_tick(1024 * 512)
             .thread_name_fn(|| {
                 static ATOMIC: AtomicUsize = AtomicUsize::new(0);
                 let id = ATOMIC.fetch_add(1, Ordering::Relaxed);
@@ -100,13 +104,19 @@ async fn application_main(args: Args) -> anyhow::Result<()> {
 
     let db_clone = db.clone();
     tokio::spawn(async move {
+        let mut last_count = 0;
         loop {
             let mut res = db_clone
                 .query("SELECT count() as c FROM li_did GROUP ALL;")
                 .await
                 .unwrap();
             let count: Option<i64> = res.take((0, "c")).unwrap();
-            info!("fully indexed repo count: {:?}", count);
+            info!(
+                "fully indexed repo count: {} with {} repos/10s",
+                count.unwrap_or(0),
+                count.unwrap_or(0) - last_count
+            );
+            last_count = count.unwrap_or(0);
             tokio::time::sleep(std::time::Duration::from_millis(10000)).await;
         }
     });
