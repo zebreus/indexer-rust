@@ -1,4 +1,4 @@
-use std::{future::Future, sync::Arc};
+use std::future::Future;
 
 use anyhow::Context;
 use fastwebsockets::{handshake, WebSocket};
@@ -11,13 +11,7 @@ use hyper::{
 use hyper_util::rt::TokioIo;
 use log::{debug, info};
 use tokio::{net::TcpStream, task};
-use tokio_rustls::{
-    rustls::{
-        pki_types::{pem::PemObject, CertificateDer, ServerName},
-        ClientConfig, RootCertStore,
-    },
-    TlsConnector,
-};
+use tokio_rustls::{rustls::pki_types::ServerName, TlsConnector};
 
 /// A tokio executor for hyper
 struct TokioExecutor;
@@ -36,18 +30,9 @@ where
 /// Connect to a websocket server
 pub async fn connect_tls(
     host: &String,
-    certificate: &String,
+    connector: &TlsConnector,
     cursor: Option<u64>,
 ) -> anyhow::Result<WebSocket<TokioIo<Upgraded>>> {
-    // prepare tls store
-    debug!(target: "indexer", "Creating tls store for certificate: {}", certificate);
-    let mut tls_store = RootCertStore::empty();
-    let tls_cert = CertificateDer::from_pem_file(certificate)
-        .with_context(|| format!("Unable to parse certificate from: {}", certificate))?;
-    tls_store
-        .add(tls_cert)
-        .with_context(|| format!("Unable to add certificate to tls store: {}", certificate))?;
-
     // create tcp connection to server
     debug!(target: "indexer", "Connecting to: {}", host);
     let addr = format!("{}:443", host);
@@ -57,10 +42,7 @@ pub async fn connect_tls(
 
     // encrypt the tcp stream with tls
     debug!(target: "indexer", "Establishing tls connection to: {}", host);
-    let tls_config = ClientConfig::builder()
-        .with_root_certificates(tls_store)
-        .with_no_client_auth();
-    let connector = TlsConnector::from(Arc::new(tls_config));
+
     let tls_domain = ServerName::try_from(host.clone())
         .with_context(|| format!("Invalid dns name: {}", host))?;
     let tls_stream = connector
