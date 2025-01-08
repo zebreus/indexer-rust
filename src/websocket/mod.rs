@@ -13,6 +13,13 @@ use hyper_util::rt::TokioIo;
 use log::{info, trace, warn};
 use surrealdb::{engine::any::Any, Surreal};
 use tokio::time::sleep;
+use tokio_rustls::{
+    rustls::{
+        pki_types::{pem::PemObject, CertificateDer},
+        ClientConfig, RootCertStore,
+    },
+    TlsConnector,
+};
 
 mod conn;
 pub mod events;
@@ -40,6 +47,29 @@ pub async fn start(
     cursor: u64,
     db: Surreal<Any>,
 ) -> anyhow::Result<()> {
+    // prepare tls store
+    let cloned_certificate_path = certificate.clone();
+    log::debug!(target: "indexer", "Creating tls store for certificate: {}", cloned_certificate_path);
+    let mut tls_store = RootCertStore::empty();
+    let tls_cert = CertificateDer::from_pem_file(certificate).with_context(|| {
+        format!(
+            "Unable to parse certificate from: {}",
+            cloned_certificate_path
+        )
+    })?;
+    tls_store.add(tls_cert).with_context(|| {
+        format!(
+            "Unable to add certificate to tls store: {}",
+            cloned_certificate_path
+        )
+    })?;
+    let tls_config = Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(Arc::new(tls_store))
+            .with_no_client_auth(),
+    );
+    let connector = TlsConnector::from(tls_config.clone());
+
     // create a shared state
     info!(target: "indexer", "Entering websocket loop");
     let state = Arc::new(SharedState {
@@ -62,7 +92,7 @@ pub async fn start(
 
         // create websocket connection
         info!(target: "indexer", "Establishing new connection to: {}", host);
-        let ws = conn::connect_tls(&host, &certificate, cursor).await;
+        let ws = conn::connect_tls(&host, &connector, cursor).await;
         if let Err(e) = ws {
             warn!(target: "indexer", "Unable to open websocket connection to {}: {:?}", host, e);
             sleep(Duration::from_secs(5)).await;

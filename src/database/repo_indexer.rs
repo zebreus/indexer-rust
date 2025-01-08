@@ -8,12 +8,14 @@ use futures::stream::{Stream, TryStreamExt};
 use ipld_core::cid::Cid;
 use iroh_car::CarReader;
 use log::{debug, error, info, warn};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
 use surrealdb::{engine::any::Any, Surreal};
+use tokio::sync::Semaphore;
 
 pub async fn start_full_repo_indexer(db: Surreal<Any>, max_tasks: usize) -> anyhow::Result<()> {
     let mut processed_dids: BTreeSet<String> = BTreeSet::new();
