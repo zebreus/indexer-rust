@@ -5,8 +5,9 @@ use index_repo::index_repo;
 use log::{error, info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 use surrealdb::{engine::any::Any, Surreal};
+use tokio::time::sleep;
 
 mod index_repo;
 
@@ -34,9 +35,19 @@ pub struct LastIndexedTimestamp {
     pub error: Option<String>,
 }
 
-pub async fn start_full_repo_indexer(db: Surreal<Any>, max_tasks: usize) -> anyhow::Result<()> {
-    let (tx, rx) = async_channel::bounded(10_000);
+/// Size of the queue of discovered repos
+const QUEUE_SIZE: usize = 200;
+/// How long to sleep, when the discovery queue is full
+const DISCOVERY_QUEUE_FULL_BACKOFF: Duration = Duration::from_millis(500);
+/// How long to sleep, when the we caught up with discovery
+const DISCOVERY_CAUGHT_UP_BACKOFF: Duration = Duration::from_millis(500);
+/// An ID that was used before the earliest data we are interested in
+const OLDEST_USEFUL_ANCHOR: &str = "3juj4";
+/// How long to sleep, when the queue is empty
+const FETCHER_BACKOFF: Duration = Duration::from_millis(500);
 
+pub async fn start_full_repo_indexer(db: Surreal<Any>, max_tasks: usize) -> anyhow::Result<()> {
+    let (tx, rx) = async_channel::bounded(QUEUE_SIZE);
     let state = Arc::new(SharedState {
         rx,
         db,
@@ -63,7 +74,10 @@ pub async fn start_full_repo_indexer(db: Surreal<Any>, max_tasks: usize) -> anyh
 
 async fn repo_fetcher_task(state: Arc<SharedState>) -> anyhow::Result<()> {
     loop {
-        let did = state.rx.recv().await.unwrap();
+        let Ok(did) = state.rx.try_recv() else {
+            sleep(FETCHER_BACKOFF).await;
+            continue;
+        };
 
         let result = index_repo(&state, &did).await;
 
@@ -94,50 +108,59 @@ async fn repo_fetcher_task(state: Arc<SharedState>) -> anyhow::Result<()> {
 }
 
 async fn repo_discovery_task(state: Arc<SharedState>, tx: Sender<String>) -> anyhow::Result<()> {
-    // An ID that was used before the earliest data we are interested in
-    const OLDEST_USEFUL_ANCHOR: &str = "3juj4";
+    // Max number of items in the queue
+    let queue_capacity = tx.capacity().unwrap_or(QUEUE_SIZE);
+    assert!(queue_capacity > 3);
+    // Start fetching when the queue is emptier than this
+    let fetch_threshold = (((queue_capacity / 3) * 2) - 1).max(1);
+    // How many items to fetch at once
+    let fetch_amount = (queue_capacity / 3).max(1);
+    // Start printing a warning when the queue is too empty
+    let warning_threshold = queue_capacity / 3;
 
-    let mut processed_dids: BTreeSet<String> = BTreeSet::new();
+    let mut processed_dids: HashSet<String> = HashSet::new();
     let mut anchor = OLDEST_USEFUL_ANCHOR.to_string();
     loop {
-        info!(target: "indexer", "anchor {}", anchor);
+        if tx.len() > fetch_threshold {
+            sleep(DISCOVERY_QUEUE_FULL_BACKOFF).await;
+            continue;
+        }
 
+        info!(target: "indexer", "Discovering follows starting from {}", anchor);
         let mut result = state
             .db
+            // TODO: Fix the possible SQL injection
             .query(format!(
-                "SELECT id,in,out FROM follow:{}.. LIMIT 500000;",
-                anchor
+                "SELECT id,in,out FROM follow:{}.. LIMIT {};",
+                anchor, fetch_amount
             ))
             .await?;
         let follows: Vec<BskyFollowRes> = result.take(0)?;
 
-        if follows.is_empty() {
-            tokio::time::sleep(std::time::Duration::from_millis(10000)).await;
+        let Some(anchor_key) = follows.last().map(|follow| follow.id.key()) else {
+            sleep(DISCOVERY_CAUGHT_UP_BACKOFF).await;
             continue;
-        }
+        };
+        anchor = format!("{}", anchor_key);
 
-        anchor = format!("{}", follows.last().unwrap().id.key());
-
-        let mut dids: BTreeSet<String> = BTreeSet::new();
-
+        let processed_dids_before = processed_dids.len();
         for follow in &follows {
             for record_id in [&follow.from, &follow.to] {
                 let did = unsafe_user_key_to_did(&format!("{}", record_id.key()));
                 if processed_dids.contains(&did) {
                     continue;
                 }
-                dids.insert(did.clone());
-                processed_dids.insert(did);
+                processed_dids.insert(did.clone());
+                tx.send(did)
+                    .await
+                    .context("Failed to send message to handler thread")?;
             }
         }
 
-        for did in dids {
-            tx.send(did)
-                .await
-                .context("Failed to send message to handler thread")?;
+        // Warn if it looks like the queue size or the backoff were choosen incorrectly
+        let new_follows = processed_dids.len() - processed_dids_before;
+        if new_follows != 0 && follows.len() == fetch_amount && tx.len() < warning_threshold {
+            warn!(target: "indexer", "Queue is not getting filled up fast enough. Consider increasing the queue size or decreasing the backoff.");
         }
-
-        // TODO: Remove and add proper backpressure
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 }
