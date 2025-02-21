@@ -13,8 +13,11 @@ use serde::Deserialize;
 use serde_ipld_dagcbor::from_reader;
 use std::{
     collections::BTreeMap,
+    string::FromUtf8Error,
     sync::{Arc, LazyLock},
 };
+use tokio::task::block_in_place;
+use tokio_util::io::StreamReader;
 
 /// There should only be one request client to make use of connection pooling
 // TODO: Dont use a global client
@@ -68,6 +71,12 @@ pub struct NodeData {
     pub entries: Vec<TreeEntry>,
 }
 
+struct DatabaseUpdate {
+    collection: String,
+    rkey: RecordKey,
+    record: KnownRecord,
+}
+
 /// Insert a file into a map
 async fn insert_into_map(
     mut files: BTreeMap<ipld_core::cid::Cid, Vec<u8>>,
@@ -90,13 +99,17 @@ async fn get_files(
         ))
         .send()
         .await?;
-    let car_res_bytes = car_res.bytes().await?;
+    let bytes_stream = car_res
+        .bytes_stream()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error));
+    let reader = StreamReader::new(bytes_stream);
+    // TODO: Figure out what the second parameter does
+    // let reader = rs_car_sync::CarReader::new(&car_res_bytes, false);
 
-    let buf_reader = tokio::io::BufReader::new(&car_res_bytes[..]);
+    // let buf_reader = tokio::io::BufReader::new(&car_res_bytes[..]);
 
     // TODO: Benchmark CarReader. This is probably not the right place for parsing logic
-    let car_reader = CarReader::new(buf_reader).await?;
-
+    let car_reader = CarReader::new(reader).await?;
     let files = car_reader
         .stream()
         .map_err(|e| e.into())
@@ -104,6 +117,52 @@ async fn get_files(
         .await;
 
     files
+}
+
+fn files_to_updates(
+    files: BTreeMap<ipld_core::cid::Cid, Vec<u8>>,
+) -> Result<Vec<DatabaseUpdate>, FromUtf8Error> {
+    // TODO: Understand this logic and whether this can be done streaming
+    let mut result = Vec::new();
+    for file in &files {
+        let Ok(node_data) = from_reader::<NodeData, _>(&file.1[..]) else {
+            continue;
+        };
+        let mut key = "".to_string();
+        for entry in node_data.entries {
+            let k = String::from_utf8(entry.key_suffix)?;
+            key = format!("{}{}", key.split_at(entry.prefix_len as usize).0, k);
+
+            let Some(block) = files.get(&entry.value) else {
+                continue;
+            };
+
+            let Ok(record) = from_reader::<KnownRecord, _>(&block[..]) else {
+                continue;
+            };
+
+            let mut parts = key.split("/");
+
+            let update = DatabaseUpdate {
+                collection: parts.next().unwrap().to_string(),
+                rkey: RecordKey::new(parts.next().unwrap().to_string()).unwrap(),
+                record,
+            };
+            result.push(update);
+            // let res = on_commit_event_createorupdate(
+            //     db,
+            //     Did::new(did.clone()).unwrap(),
+            //     did_key.clone(),
+            //     parts.next().unwrap().to_string(),
+            //     RecordKey::new(parts.next().unwrap().to_string()).unwrap(),
+            //     record,
+            // )
+            // if let Err(error) = res {
+            //     warn!("on_commit_event_createorupdate {} {}", error, did);
+            // }
+        }
+    }
+    return Ok(result);
 }
 
 /// Indexes the repo with the given DID (Decentralized Identifier)
@@ -137,39 +196,21 @@ pub async fn index_repo(state: &Arc<SharedState>, did: &String) -> anyhow::Resul
         return Ok(());
     };
     let files = get_files(service, did).await?;
+    let updates = block_in_place(|| files_to_updates(files))?;
+    for update in updates {
+        // TODO: Figure out what this does and whether we can batch these updates
+        let res = on_commit_event_createorupdate(
+            &state.db,
+            Did::new(did.clone()).unwrap(),
+            did_key.clone(),
+            update.collection,
+            update.rkey,
+            update.record,
+        )
+        .await;
 
-    for file in &files {
-        let Ok(node_data) = from_reader::<NodeData, _>(&file.1[..]) else {
-            continue;
-        };
-        let mut key = "".to_string();
-        for entry in node_data.entries {
-            let k = String::from_utf8(entry.key_suffix)?;
-            key = format!("{}{}", key.split_at(entry.prefix_len as usize).0, k);
-
-            let Some(block) = files.get(&entry.value) else {
-                continue;
-            };
-
-            let Ok(record) = from_reader::<KnownRecord, _>(&block[..]) else {
-                continue;
-            };
-
-            let mut parts = key.split("/");
-
-            let res = on_commit_event_createorupdate(
-                &state.db,
-                Did::new(did.clone()).unwrap(),
-                did_key.clone(),
-                parts.next().unwrap().to_string(),
-                RecordKey::new(parts.next().unwrap().to_string()).unwrap(),
-                record,
-            )
-            .await;
-
-            if let Err(error) = res {
-                warn!("on_commit_event_createorupdate {} {}", error, did);
-            }
+        if let Err(error) = res {
+            warn!("on_commit_event_createorupdate {} {}", error, did);
         }
     }
     let _: Option<Record> = state
