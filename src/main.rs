@@ -1,30 +1,92 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use ::log::{error, info};
 use anyhow::Context;
 use config::Args;
 use database::repo_indexer::start_full_repo_indexer;
+use opentelemetry::global;
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use opentelemetry_otlp::{LogExporter, MetricExporter, SpanExporter};
+use opentelemetry_sdk::{
+    logs::SdkLoggerProvider, metrics::SdkMeterProvider, trace::SdkTracerProvider, Resource,
+};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    LazyLock,
+};
 use surrealdb::{engine::any::Any, Surreal};
 use tokio::runtime::Builder;
 use tokio_rustls::rustls::crypto::aws_lc_rs::default_provider;
+use tracing::{error, info};
+use tracing_subscriber::{prelude::*, EnvFilter};
 
 mod config;
 mod database;
-mod log;
 mod websocket;
 
 /// Override the global allocator with mimalloc
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+const RESOURCE: LazyLock<Resource> = LazyLock::new(|| {
+    Resource::builder()
+        .with_service_name("rust-indexer")
+        .build()
+});
+
+fn init_logger() -> SdkLoggerProvider {
+    let otlp_log_exporter = LogExporter::builder().with_tonic().build().unwrap();
+    let logger_provider = SdkLoggerProvider::builder()
+        .with_resource(RESOURCE.clone())
+        .with_batch_exporter(otlp_log_exporter)
+        .build();
+    let otel_filter = EnvFilter::new("info")
+        .add_directive("hyper=off".parse().unwrap())
+        .add_directive("h2=off".parse().unwrap())
+        .add_directive("opentelemetry=off".parse().unwrap())
+        .add_directive("tonic=off".parse().unwrap())
+        .add_directive("reqwest=off".parse().unwrap());
+    let otel_layer = OpenTelemetryTracingBridge::new(&logger_provider).with_filter(otel_filter);
+
+    let tokio_console_layer = console_subscriber::spawn();
+
+    let stdout_filter = EnvFilter::new("info").add_directive("opentelemetry=info".parse().unwrap());
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .with_thread_names(true)
+        .with_filter(stdout_filter);
+
+    tracing_subscriber::registry()
+        .with(tokio_console_layer)
+        .with(otel_layer)
+        .with(stdout_layer)
+        .init();
+    logger_provider
+}
+
+fn init_metrics() -> SdkMeterProvider {
+    let otlp_metric_exporter = MetricExporter::builder().with_tonic().build().unwrap();
+
+    let meter_provider = SdkMeterProvider::builder()
+        // .with_periodic_exporter(exporter)
+        .with_periodic_exporter(otlp_metric_exporter)
+        .with_resource(RESOURCE.clone())
+        .build();
+    global::set_meter_provider(meter_provider.clone());
+
+    meter_provider
+}
+
+fn init_tracer() -> SdkTracerProvider {
+    let otlp_span_exporter = SpanExporter::builder().with_tonic().build().unwrap();
+
+    let tracer_provider = SdkTracerProvider::builder()
+        .with_simple_exporter(otlp_span_exporter)
+        .build();
+    global::set_tracer_provider(tracer_provider.clone());
+
+    tracer_provider
+}
+
 /// Entry point for the application
 fn main() {
-    console_subscriber::init();
-    // parse command line arguments
     let args = config::parse_args();
-
-    // initialize logging and dump configuration
-    log::init(args.log_level());
     args.dump();
 
     // build async runtime
@@ -37,7 +99,7 @@ fn main() {
             .thread_name_fn(|| {
                 static ATOMIC: AtomicUsize = AtomicUsize::new(0);
                 let id = ATOMIC.fetch_add(1, Ordering::Relaxed);
-                format!("Tokio Async Thread {}", id)
+                format!("Thread {}", id)
             })
             .build()
             .unwrap()
@@ -49,7 +111,7 @@ fn main() {
             .thread_name_fn(|| {
                 static ATOMIC: AtomicUsize = AtomicUsize::new(0);
                 let id = ATOMIC.fetch_add(1, Ordering::Relaxed);
-                format!("Tokio Async Thread {}", id)
+                format!("Thread {}", id)
             })
             .build()
             .unwrap()
@@ -68,6 +130,10 @@ fn main() {
 
 /// Asynchronous main function
 async fn application_main(args: Args) -> anyhow::Result<()> {
+    let tracer_provider = init_tracer();
+    let metrics_provider = init_metrics();
+    let logger_provider = init_logger();
+
     // connect to the database
     let db = database::connect(args.db, &args.username, &args.password)
         .await
@@ -84,9 +150,9 @@ async fn application_main(args: Args) -> anyhow::Result<()> {
     for host in jetstream_hosts {
         let db_clone = db.clone();
         let certificate = args.certificate.clone();
-
+        let (name, _) = host.split_at(18);
         std::thread::Builder::new()
-            .name(format!("Jetstream Consumer {}", host))
+            .name(format!("{}", name))
             .spawn(move || {
                 Builder::new_current_thread()
                     .enable_io()
@@ -124,12 +190,20 @@ async fn application_main(args: Args) -> anyhow::Result<()> {
 
     if args.mode == "full" {
         start_full_repo_indexer(db, args.max_tasks.unwrap_or(num_cpus::get() * 50)).await?;
+    } else {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        }
     }
 
-    loop {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    // TODO: Also handle shutdown when an error occurs
+    tracer_provider.shutdown().unwrap();
+    metrics_provider.shutdown().unwrap();
+    logger_provider.shutdown().unwrap();
+
+    Ok(())
 }
+
 async fn start_jetstream_consumer(
     db: Surreal<Any>,
     host: String,

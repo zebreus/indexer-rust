@@ -5,8 +5,8 @@ use std::{
 };
 
 use futures::Stream;
-use log::info;
 use surrealdb::{engine::any::Any, Surreal};
+use tracing::info;
 
 use crate::database::{repo_indexer::BskyFollowRes, utils::unsafe_user_key_to_did};
 

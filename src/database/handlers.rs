@@ -9,8 +9,8 @@ use atrium_api::{
     },
 };
 use chrono::Utc;
-use log::warn;
 use surrealdb::{engine::any::Any, RecordId, Surreal};
+use tracing::warn;
 
 use crate::websocket::events::{Commit, Kind};
 

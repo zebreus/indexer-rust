@@ -9,9 +9,9 @@ use hyper::{
     Request,
 };
 use hyper_util::rt::TokioIo;
-use log::{debug, info};
 use tokio::{net::TcpStream, task};
 use tokio_rustls::{rustls::pki_types::ServerName, TlsConnector};
+use tracing::{debug, info};
 
 /// A tokio executor for hyper
 struct TokioExecutor;
