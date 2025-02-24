@@ -58,6 +58,8 @@
             pkgs.openssl
             pkgs.pkg-config
             pkgs.clang
+
+            pkgs.tokio-console
           ];
 
           shellHook = ''

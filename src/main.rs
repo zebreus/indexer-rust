@@ -19,6 +19,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Entry point for the application
 fn main() {
+    console_subscriber::init();
     // parse command line arguments
     let args = config::parse_args();
 
