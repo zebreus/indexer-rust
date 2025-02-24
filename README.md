@@ -14,3 +14,9 @@ The database can then be used to run powerful queries on the network data or bui
 4. Launch the indexer with `./target/release/skyfeed-indexer [--help]`.
 
 You may need to increase the ulimit for the number of open files. You can do this by running `ulimit -n 1000000`.
+
+## Debugging and profiling
+
+### tokio
+
+You can use tokio-console to get more insights into what the tokio tasks are currently doing. Just run `tokio-console` while the indexer is running.
