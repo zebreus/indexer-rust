@@ -8,13 +8,13 @@ use futures::TryStreamExt;
 use hyper::body::Bytes;
 use ipld_core::cid::{Cid, CidGeneric};
 use iroh_car::CarReader;
-use log::warn;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_ipld_dagcbor::from_reader;
 use std::{collections::BTreeMap, string::FromUtf8Error, sync::LazyLock, time::Duration};
 use surrealdb::{engine::any::Any, Surreal};
 use tokio::task::spawn_blocking;
+use tracing::{trace, warn};
 
 /// There should only be one request client to make use of connection pooling
 // TODO: Dont use a global client
@@ -398,6 +398,6 @@ impl<'a> PipelineItem<'a, WithUpdates> {
 impl<'a> PipelineItem<'a, Done> {
     pub async fn print_report(self) -> () {
         // TODO: This is only for printing debug stuff
-        println!("Indexed {}", self.did);
+        trace!("Indexed {}", self.did);
     }
 }

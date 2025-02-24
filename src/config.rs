@@ -1,6 +1,6 @@
 use clap::{ArgAction, Parser};
 use colored::Colorize;
-use log::{info, LevelFilter};
+use tracing::{info, level_filters::LevelFilter};
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -64,9 +64,9 @@ impl Args {
     /// Verbosity to log level
     pub fn log_level(self: &Self) -> LevelFilter {
         match self.verbosity {
-            0 => LevelFilter::Info,
-            1 => LevelFilter::Debug,
-            _ => LevelFilter::Trace,
+            0 => LevelFilter::INFO,
+            1 => LevelFilter::DEBUG,
+            _ => LevelFilter::TRACE,
         }
     }
 }

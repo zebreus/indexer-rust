@@ -1,3 +1,7 @@
+use anyhow::Context;
+use fastwebsockets::{OpCode, WebSocket};
+use hyper::upgrade::Upgraded;
+use hyper_util::rt::TokioIo;
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -5,12 +9,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-
-use anyhow::Context;
-use fastwebsockets::{OpCode, WebSocket};
-use hyper::upgrade::Upgraded;
-use hyper_util::rt::TokioIo;
-use log::{info, trace, warn};
 use surrealdb::{engine::any::Any, Surreal};
 use tokio::time::sleep;
 use tokio_rustls::{
@@ -20,6 +18,7 @@ use tokio_rustls::{
     },
     TlsConnector,
 };
+use tracing::{debug, info, trace, warn};
 
 mod conn;
 pub mod events;
@@ -49,7 +48,7 @@ pub async fn start(
 ) -> anyhow::Result<()> {
     // prepare tls store
     let cloned_certificate_path = certificate.clone();
-    log::debug!(target: "indexer", "Creating tls store for certificate: {}", cloned_certificate_path);
+    debug!(target: "indexer", "Creating tls store for certificate: {}", cloned_certificate_path);
     let mut tls_store = RootCertStore::empty();
     let tls_cert = CertificateDer::from_pem_file(certificate).with_context(|| {
         format!(

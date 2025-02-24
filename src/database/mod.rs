@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use definitions::{JetstreamCursor, Record};
-use log::{debug, info};
 use surrealdb::{engine::any::Any, opt::auth::Root, RecordId, Surreal};
+use tracing::{debug, info};
 
 pub mod definitions;
 pub mod handlers;

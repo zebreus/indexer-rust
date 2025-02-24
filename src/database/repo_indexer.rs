@@ -1,10 +1,10 @@
 use futures::StreamExt;
 use index_repo::PipelineItem;
-use log::{error, info};
 use repo_stream::RepoStream;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use surrealdb::{engine::any::Any, Surreal};
+use tracing::{error, info};
 
 mod index_repo;
 mod repo_stream;
@@ -31,23 +31,14 @@ const OLDEST_USEFUL_ANCHOR: &str = "3juj4";
 /// The size of the buffer between each pipeline stage in elements
 const BUFFER_SIZE: usize = 200;
 
-pub async fn to_async(did: String) -> String {
-    println!("did: {}", did);
-    did
-}
-
 pub async fn start_full_repo_indexer(db: Surreal<Any>, max_tasks: usize) -> anyhow::Result<()> {
     let http_client = Client::new();
 
     info!(target: "indexer", "Spinning up {} handler tasks", max_tasks);
 
     RepoStream::new(OLDEST_USEFUL_ANCHOR.to_string(), &db)
-        .map(to_async)
+        .map(|did| async { did })
         .buffer_unordered(BUFFER_SIZE)
-        .map(|x| {
-            println!("gonna process {}", x);
-            x
-        })
         .map(|did| {
             let db = &db;
             let http_client = &http_client;

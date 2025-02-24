@@ -1,7 +1,7 @@
 use anyhow::Context;
-use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use surrealdb::{engine::any::Any, Datetime, RecordId, Surreal};
+use tracing::{debug, info};
 
 /// Database struct for a bluesky profile
 #[derive(Debug, Serialize)]
