@@ -65,8 +65,8 @@ sys-info = "0.9.1"
 sysinfo = "0.33.1"
 
 [profile.release]
-lto = false
-strip = true
+lto = true
+strip = false
 opt-level = 3
 panic = 'abort'
 codegen-units = 1
