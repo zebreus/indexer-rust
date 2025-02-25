@@ -59,6 +59,8 @@ tonic = "0.12.3"
 opentelemetry-semantic-conventions = { version = "0.28.0", features = [
     "semconv_experimental",
 ] }
+tracing-opentelemetry = "0.29.0"
+opentelemetry-resource-detectors = "0.7.0"
 sys-info = "0.9.1"
 sysinfo = "0.33.1"
 
