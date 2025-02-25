@@ -1,7 +1,7 @@
 use anyhow::Context;
 use config::Args;
 use database::repo_indexer::start_full_repo_indexer;
-use opentelemetry::global;
+use metrics_reporter::export_system_metrics;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{LogExporter, MetricExporter, SpanExporter};
 use opentelemetry_sdk::{
@@ -19,6 +19,7 @@ use tracing_subscriber::{prelude::*, EnvFilter};
 
 mod config;
 mod database;
+mod metrics_reporter;
 mod websocket;
 
 /// Override the global allocator with mimalloc
@@ -130,9 +131,8 @@ fn main() {
 
 /// Asynchronous main function
 async fn application_main(args: Args) -> anyhow::Result<()> {
-    let tracer_provider = init_tracer();
-    let metrics_provider = init_metrics();
-    let logger_provider = init_logger();
+    // Start exporting system metrics
+    tokio::task::spawn_blocking(export_system_metrics);
 
     // connect to the database
     let db = database::connect(args.db, &args.username, &args.password)
