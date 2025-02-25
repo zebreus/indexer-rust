@@ -31,7 +31,7 @@ use std::{
     },
 };
 use surrealdb::{engine::any::Any, Surreal, Uuid};
-use tokio::{runtime::Builder, signal::ctrl_c, time::interval_at};
+use tokio::{runtime::Builder, signal::ctrl_c};
 use tokio_rustls::rustls::crypto::aws_lc_rs::default_provider;
 use tracing::error;
 use tracing_subscriber::{prelude::*, EnvFilter};
@@ -151,7 +151,7 @@ fn init_logger() -> SdkLoggerProvider {
 fn init_meter() -> SdkMeterProvider {
     let otlp_metric_exporter = MetricExporter::builder()
         .with_tonic()
-        .with_temporality(opentelemetry_sdk::metrics::Temporality::default())
+        .with_temporality(opentelemetry_sdk::metrics::Temporality::Cumulative)
         .build()
         .unwrap();
 
@@ -273,22 +273,6 @@ async fn application_main(args: Args) -> anyhow::Result<()> {
     // Start exporting system metrics
     tokio::task::spawn(export_system_metrics());
 
-    // // Create a tracing layer with the configured tracer
-    // let telemetry =
-    //     tracing_opentelemetry::layer().with_tracer(otel_guard.tracer_provider.tracer("testingsss"));
-
-    // // Use the tracing subscriber `Registry`, or any other subscriber
-    // // that impls `LookupSpan`
-    // let subscriber = Registry::default().with(telemetry);
-    // // Trace executed code
-    // tracing::subscriber::with_default(subscriber, || {
-    //     // Spans will be sent to the configured OpenTelemetry exporter
-    //     let root = span!(tracing::Level::TRACE, "app_start", work_units = 2);
-    //     let _enter = root.enter();
-
-    //     error!("This event will be logged in the root span.");
-    // });
-
     // connect to the database
     let db = database::connect(args.db, &args.username, &args.password)
         .await
@@ -323,33 +307,6 @@ async fn application_main(args: Args) -> anyhow::Result<()> {
             })
             .context("Failed to spawn jetstream consumer thread")?;
     }
-
-    let db_clone = db.clone();
-    tokio::spawn(async move {
-        let indexed_repos_counter = global::meter("indexer")
-            .u64_counter("indexer.repos.indexed")
-            .with_description("Total number of indexed repos")
-            .with_unit("{repo}")
-            .build();
-        let mut last_count: u64 = 0;
-        let mut interval = interval_at(
-            tokio::time::Instant::now(),
-            tokio::time::Duration::from_secs(2),
-        );
-        loop {
-            let mut res = db_clone
-                .query("SELECT count() as c FROM li_did GROUP ALL;")
-                .await
-                .unwrap();
-            let count: Option<i64> = res.take((0, "c")).unwrap();
-            let count = count.unwrap_or(last_count as i64) as u64;
-
-            indexed_repos_counter.add(count - last_count, &[]);
-            last_count = count;
-
-            interval.tick().await;
-        }
-    });
 
     if args.mode == "full" {
         start_full_repo_indexer(&db).await?;

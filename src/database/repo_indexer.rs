@@ -1,10 +1,11 @@
 use futures::StreamExt;
 use index_repo::PipelineItem;
+use opentelemetry::global;
 use repo_stream::RepoStream;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use surrealdb::{engine::any::Any, Surreal};
-use tracing::error;
+use tracing::{error, warn};
 
 mod index_repo;
 mod repo_stream;
@@ -33,6 +34,23 @@ const BUFFER_SIZE: usize = 200;
 
 pub async fn start_full_repo_indexer(db: &Surreal<Any>) -> anyhow::Result<()> {
     let http_client = Client::new();
+
+    let meter = global::meter("indexer");
+    let repos_indexed = meter
+        .u64_counter("indexer.repos.indexed")
+        .with_description("Total number of indexed repos")
+        .with_unit("repo")
+        .build();
+
+    let mut res = db
+        .query("SELECT count() as c FROM li_did GROUP ALL;")
+        .await
+        .unwrap();
+    let count = res.take::<Option<i64>>((0, "c")).unwrap().unwrap_or(0);
+    if count == 0 {
+        warn!("Started with 0 repos, this might be a bug");
+    }
+    repos_indexed.add(count as u64, &[]);
 
     RepoStream::new(OLDEST_USEFUL_ANCHOR.to_string(), &db)
         .map(|did| async { did })
@@ -91,9 +109,9 @@ pub async fn start_full_repo_indexer(db: &Surreal<Any>) -> anyhow::Result<()> {
             }
             result.ok()
         })
-        .take(10)
         .for_each(|x| async {
             x.print_report().await;
+            repos_indexed.add(1, &[]);
         })
         .await;
 
