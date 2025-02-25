@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use opentelemetry::{global, KeyValue};
 use opentelemetry_semantic_conventions::{
     attribute::{
@@ -11,9 +13,11 @@ use opentelemetry_semantic_conventions::{
         SYSTEM_NETWORK_PACKETS,
     },
 };
-use std::time::Duration;
 use sysinfo::{Networks, System};
-use tokio::task::{block_in_place, yield_now};
+use tokio::{
+    task::{block_in_place, yield_now},
+    time::{interval_at, Instant},
+};
 
 const METRICS_INTERVAL: Duration = Duration::from_secs(2);
 pub async fn export_system_metrics() {
@@ -77,10 +81,9 @@ pub async fn export_system_metrics() {
     let mut previous_used_memory = 0u64;
     let mut previous_availabe_memory = 0u64;
 
-    let mut last_update = tokio::time::Instant::now();
+    let mut interval = interval_at(Instant::now(), METRICS_INTERVAL);
     loop {
-        tokio::time::sleep_until(last_update + METRICS_INTERVAL).await;
-        last_update = tokio::time::Instant::now();
+        interval.tick().await;
 
         block_in_place(|| {
             system.refresh_cpu_all();
