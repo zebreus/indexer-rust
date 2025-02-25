@@ -14,7 +14,7 @@ use serde_ipld_dagcbor::from_reader;
 use std::{collections::BTreeMap, string::FromUtf8Error, sync::LazyLock, time::Duration};
 use surrealdb::{engine::any::Any, Surreal};
 use tokio::task::spawn_blocking;
-use tracing::{trace, warn};
+use tracing::{info, instrument, span, trace, warn, Level, Span};
 
 /// There should only be one request client to make use of connection pooling
 // TODO: Dont use a global client
@@ -85,8 +85,9 @@ async fn insert_into_map(
 }
 
 /// Convert downloaded files into database updates. Blocks the thread
+#[instrument(skip_all)]
 fn files_to_updates_blocking(
-    files: BTreeMap<ipld_core::cid::Cid, Vec<u8>>,
+    files: BTreeMap<Cid, Vec<u8>>,
 ) -> Result<Vec<DatabaseUpdate>, FromUtf8Error> {
     // TODO: Understand this logic and whether this can be done streaming
     let mut result = Vec::new();
@@ -121,6 +122,7 @@ fn files_to_updates_blocking(
 }
 
 /// Check if a repo is already indexed
+#[instrument()]
 async fn check_indexed(db: &Surreal<Any>, did: &str) -> anyhow::Result<bool> {
     let did_key = crate::database::utils::did_to_key(did)?;
 
@@ -131,6 +133,7 @@ async fn check_indexed(db: &Surreal<Any>, did: &str) -> anyhow::Result<bool> {
 }
 
 /// Get the plc response service for the repo
+#[instrument(skip_all)]
 async fn get_plc_service(
     http_client: &Client,
     did: &str,
@@ -146,6 +149,7 @@ async fn get_plc_service(
 }
 
 /// Download a repo from the given service
+#[instrument(skip_all)]
 async fn download_repo(
     service: &PlcDirectoryDidResponseService,
     did: &str,
@@ -158,17 +162,17 @@ async fn download_repo(
         .send()
         .await?;
     let bytes = get_repo_response.bytes().await?;
+    info!(
+        "Downloaded repo {} with size {:.2} MB",
+        did,
+        bytes.len() as f64 / (1000.0 * 1000.0)
+    );
     return Ok(bytes);
 }
 
 /// Download the file for the given repo into a map
-async fn deserialize_repo(bytes: Bytes) -> anyhow::Result<BTreeMap<ipld_core::cid::Cid, Vec<u8>>> {
-    // let reader = StreamReader::new(bytes.as_ref());
-    // TODO: Figure out what the second parameter does
-    // let reader = rs_car_sync::CarReader::new(&car_res_bytes, false);
-
-    // let buf_reader = tokio::io::BufReader::new(&car_res_bytes[..]);
-
+#[instrument(skip_all)]
+async fn deserialize_repo(bytes: Bytes) -> anyhow::Result<BTreeMap<Cid, Vec<u8>>> {
     // TODO: Benchmark CarReader. This is probably not the right place for parsing logic
     let car_reader = CarReader::new(bytes.as_ref()).await?;
     let files = car_reader
@@ -181,15 +185,15 @@ async fn deserialize_repo(bytes: Bytes) -> anyhow::Result<BTreeMap<ipld_core::ci
 }
 
 /// Convert downloaded files into database updates
-async fn files_to_updates(
-    files: BTreeMap<ipld_core::cid::Cid, Vec<u8>>,
-) -> anyhow::Result<Vec<DatabaseUpdate>> {
+#[instrument(skip_all)]
+async fn files_to_updates(files: BTreeMap<Cid, Vec<u8>>) -> anyhow::Result<Vec<DatabaseUpdate>> {
     // TODO: Look into using block_in_place instead of spawn_blocking
     let result = spawn_blocking(|| files_to_updates_blocking(files)).await??;
     Ok(result)
 }
 
 /// Apply updates to the database
+#[instrument(skip_all)]
 async fn apply_updates(
     db: &Surreal<Any>,
     did: &str,
@@ -284,6 +288,7 @@ pub struct PipelineItem<'a, State> {
     db: &'a Surreal<Any>,
     http_client: &'a Client,
     did: String,
+    span: Span,
     state: State,
 }
 
@@ -293,31 +298,37 @@ impl<'a> PipelineItem<'a, New> {
         http_client: &'a Client,
         did: String,
     ) -> PipelineItem<'a, New> {
+        let span = span!(target: "backfill", parent: None, Level::INFO, "pipeline_item");
+        span.record("did", did.clone());
+        span.in_scope(|| {
+            trace!("Start backfilling repo");
+        });
         PipelineItem::<'a, New> {
             db,
             http_client,
             did,
+            span,
             state: New {},
         }
     }
 }
 
 impl<'a> PipelineItem<'a, New> {
+    #[instrument(skip(self), parent = &self.span)]
     pub async fn check_indexed(self) -> anyhow::Result<PipelineItem<'a, NotIndexed>> {
         if check_indexed(&self.db, &self.did).await? {
             // TODO: Handle this better, as this is not really an error
             return Err(anyhow::anyhow!("Already indexed"));
         }
         Ok(PipelineItem::<'a, NotIndexed> {
-            db: self.db,
-            http_client: self.http_client,
-            did: self.did,
             state: NotIndexed {},
+            ..self
         })
     }
 }
 
 impl<'a> PipelineItem<'a, NotIndexed> {
+    #[instrument(skip(self), parent = &self.span)]
     pub async fn get_service(self) -> anyhow::Result<PipelineItem<'a, WithService>> {
         let service = get_plc_service(&self.http_client, &self.did).await?;
         let Some(service) = service else {
@@ -325,77 +336,73 @@ impl<'a> PipelineItem<'a, NotIndexed> {
             return Err(anyhow::anyhow!("Failed to get a plc service"));
         };
         Ok(PipelineItem::<'a, WithService> {
-            db: self.db,
-            http_client: self.http_client,
-            did: self.did,
             state: WithService {
                 service: service,
                 now: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap(),
             },
+            ..self
         })
     }
 }
 
 impl<'a> PipelineItem<'a, WithService> {
+    #[instrument(skip(self), parent = &self.span)]
     pub async fn download_repo(self) -> anyhow::Result<PipelineItem<'a, WithRepo>> {
         let repo = download_repo(&self.state.service, &self.did).await?;
         Ok(PipelineItem::<'a, WithRepo> {
-            db: self.db,
-            http_client: self.http_client,
-            did: self.did,
             state: WithRepo {
                 now: self.state.now,
                 repo,
             },
+            ..self
         })
     }
 }
 
 impl<'a> PipelineItem<'a, WithRepo> {
+    #[instrument(skip(self), parent = &self.span)]
     pub async fn deserialize_repo(self) -> anyhow::Result<PipelineItem<'a, WithFiles>> {
+        info!("Deserializing repo {}", self.did);
         let files = deserialize_repo(self.state.repo).await?;
         Ok(PipelineItem::<'a, WithFiles> {
-            db: self.db,
-            http_client: self.http_client,
-            did: self.did,
             state: WithFiles {
                 now: self.state.now,
                 files,
             },
+            ..self
         })
     }
 }
 
 impl<'a> PipelineItem<'a, WithFiles> {
+    #[instrument(skip(self), parent = &self.span)]
     pub async fn files_to_updates(self) -> anyhow::Result<PipelineItem<'a, WithUpdates>> {
         let updates = files_to_updates(self.state.files).await?;
         Ok(PipelineItem::<'a, WithUpdates> {
-            db: self.db,
-            http_client: self.http_client,
-            did: self.did,
             state: WithUpdates {
                 now: self.state.now,
                 updates,
             },
+            ..self
         })
     }
 }
 
 impl<'a> PipelineItem<'a, WithUpdates> {
+    #[instrument(skip(self), parent = &self.span)]
     pub async fn apply_updates(self) -> anyhow::Result<PipelineItem<'a, Done>> {
         apply_updates(&self.db, &self.did, self.state.updates, &self.state.now).await?;
         Ok(PipelineItem::<'a, Done> {
-            db: self.db,
-            http_client: self.http_client,
-            did: self.did,
             state: Done {},
+            ..self
         })
     }
 }
 
 impl<'a> PipelineItem<'a, Done> {
+    #[instrument(skip(self), parent = &self.span)]
     pub async fn print_report(self) -> () {
         // TODO: This is only for printing debug stuff
         trace!("Indexed {}", self.did);
