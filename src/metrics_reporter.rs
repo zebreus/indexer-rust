@@ -20,7 +20,7 @@ use tokio::{
 };
 
 const METRICS_INTERVAL: Duration = Duration::from_secs(2);
-pub async fn export_system_metrics() {
+pub async fn export_system_metrics() -> anyhow::Result<()> {
     let meter = global::meter("system");
 
     let mut system = System::new_all();

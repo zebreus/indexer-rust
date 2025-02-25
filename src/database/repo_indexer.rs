@@ -30,9 +30,9 @@ pub struct LastIndexedTimestamp {
 /// An ID that was used before the earliest data we are interested in
 const OLDEST_USEFUL_ANCHOR: &str = "3juj4";
 /// The size of the buffer between each pipeline stage in elements
-const BUFFER_SIZE: usize = 200;
+const BUFFER_SIZE: usize = 1;
 
-pub async fn start_full_repo_indexer(db: &Surreal<Any>) -> anyhow::Result<()> {
+pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
     let http_client = Client::new();
 
     let meter = global::meter("indexer");
@@ -115,5 +115,6 @@ pub async fn start_full_repo_indexer(db: &Surreal<Any>) -> anyhow::Result<()> {
         })
         .await;
 
-    panic!("Done, this should not happen");
+    // panic!("Done, this should not happen");
+    Ok(())
 }
