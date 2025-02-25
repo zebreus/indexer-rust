@@ -27,47 +27,49 @@ pub async fn export_system_metrics() {
     });
     yield_now().await;
 
-    // let uptime_meter = meter
-    //     .f64_gauge(SYSTEM_UPTIME)
-    //     .with_description("The time the system has been running")
-    //     .build();
     let cpu_utilization_meter = meter
         .f64_gauge(SYSTEM_CPU_UTILIZATION)
         .with_description("Difference in system.cpu.time since the last measurement, divided by the elapsed time and number of logical CPUs")
+        .with_unit("1")
         .build();
     let cpu_logical_count_meter = meter
     .i64_up_down_counter(SYSTEM_CPU_LOGICAL_COUNT)
     .with_description("Reports the number of logical (virtual) processor cores created by the operating system to manage multitasking")
+    .with_unit("{cpu}")
     .build();
     let cpu_frequency_meter = meter
         .f64_gauge(SYSTEM_CPU_FREQUENCY)
         .with_description("Reports the current frequency of the CPU in Hz")
+        .with_unit("{Hz}")
         .build();
     let memory_usage_meter = meter
         .i64_up_down_counter(SYSTEM_MEMORY_USAGE)
         .with_description("Reports memory in use by state")
+        .with_unit("By")
         .build();
     let memory_limit_meter = meter
         .i64_up_down_counter(SYSTEM_MEMORY_LIMIT)
         .with_description("Total memory available in the system")
+        .with_unit("By")
         .build();
-    let memory_utilization_meter = meter.f64_gauge(SYSTEM_MEMORY_UTILIZATION).build();
+    let memory_utilization_meter = meter
+        .f64_gauge(SYSTEM_MEMORY_UTILIZATION)
+        .with_unit("1")
+        .build();
     let memory_available_meter = meter
         .i64_up_down_counter(SYSTEM_LINUX_MEMORY_AVAILABLE)
         .with_description("An estimate of how much memory is available for starting new applications, without causing swapping")
+        .with_unit("By")
         .build();
-    // let network_dropped_meter = meter
-    //     .u64_counter(SYSTEM_NETWORK_DROPPED)
-    //     .with_description(
-    //         "Count of packets that are dropped or discarded even though there was no error",
-    //     )
-    //     .build();
-    let network_packets_meter = meter.u64_counter(SYSTEM_NETWORK_PACKETS).build();
-    let network_errors_meter = meter.u64_counter(SYSTEM_NETWORK_ERRORS).build();
-    let network_io_meter = meter.u64_counter(SYSTEM_NETWORK_IO).build();
-    // let network_connections_meter = meter
-    //     .i64_up_down_counter(SYSTEM_NETWORK_CONNECTIONS)
-    //     .build();
+    let network_packets_meter = meter
+        .u64_counter(SYSTEM_NETWORK_PACKETS)
+        .with_unit("{packet}")
+        .build();
+    let network_errors_meter = meter
+        .u64_counter(SYSTEM_NETWORK_ERRORS)
+        .with_unit("{error}")
+        .build();
+    let network_io_meter = meter.u64_counter(SYSTEM_NETWORK_IO).with_unit("By").build();
 
     let mut previous_cpu_logical_count = 0;
     let mut previous_free_memory = 0u64;
