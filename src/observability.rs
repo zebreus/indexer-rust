@@ -86,6 +86,7 @@ pub async fn init_observability() -> Arc<OtelGuard> {
     let meter_provider = init_meter();
     let logger_provider = init_logger();
 
+    // Exports logs to otel
     let otel_log_filter = EnvFilter::new("info")
         .add_directive("hyper=off".parse().unwrap())
         .add_directive("h2=off".parse().unwrap())
@@ -95,14 +96,27 @@ pub async fn init_observability() -> Arc<OtelGuard> {
     let otel_log_layer =
         OpenTelemetryTracingBridge::new(&logger_provider).with_filter(otel_log_filter);
 
+    // Exports tokio stats for tokio-console
     let tokio_console_layer = console_subscriber::spawn();
 
+    // Prints logs to stdout
     let stdout_filter = EnvFilter::new("info").add_directive("opentelemetry=info".parse().unwrap());
     let stdout_layer = tracing_subscriber::fmt::layer()
         .with_thread_names(true)
         .with_filter(stdout_filter);
 
+    // Exports tracing traces to opentelemetry
+    let tracing_filter = EnvFilter::new("info")
+        .add_directive("hyper=off".parse().unwrap())
+        .add_directive("h2=off".parse().unwrap())
+        .add_directive("opentelemetry=off".parse().unwrap())
+        .add_directive("tonic=off".parse().unwrap())
+        .add_directive("reqwest=off".parse().unwrap());
     let tracer = tracer_provider.tracer("tracing-otel-subscriber");
+    let tracing_layer =
+        tracing_opentelemetry::OpenTelemetryLayer::new(tracer).with_filter(tracing_filter);
+
+    // Add all layers
     tracing_subscriber::registry()
         .with(tokio_console_layer)
         .with(otel_log_layer)
@@ -110,7 +124,7 @@ pub async fn init_observability() -> Arc<OtelGuard> {
         .with(tracing_opentelemetry::MetricsLayer::new(
             meter_provider.clone(),
         ))
-        .with(tracing_opentelemetry::OpenTelemetryLayer::new(tracer))
+        .with(tracing_layer)
         .init();
 
     // TODO: Replace this hacky mess with something less broken
