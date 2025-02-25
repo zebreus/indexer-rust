@@ -33,8 +33,8 @@ use std::{
 use surrealdb::{engine::any::Any, Surreal, Uuid};
 use tokio::{runtime::Builder, signal::ctrl_c, time::interval_at};
 use tokio_rustls::rustls::crypto::aws_lc_rs::default_provider;
-use tracing::{error, span};
-use tracing_subscriber::{prelude::*, EnvFilter, Registry};
+use tracing::error;
+use tracing_subscriber::{prelude::*, EnvFilter};
 
 mod config;
 mod database;
@@ -352,7 +352,7 @@ async fn application_main(args: Args) -> anyhow::Result<()> {
     });
 
     if args.mode == "full" {
-        start_full_repo_indexer(db, args.max_tasks.unwrap_or(num_cpus::get() * 50)).await?;
+        start_full_repo_indexer(&db).await?;
     } else {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
