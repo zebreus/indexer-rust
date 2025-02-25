@@ -9,8 +9,9 @@ use atrium_api::{
     },
 };
 use chrono::Utc;
+use std::future::IntoFuture;
 use surrealdb::{engine::any::Any, RecordId, Surreal};
-use tracing::warn;
+use tracing::{instrument, span, warn, Instrument, Level};
 
 use crate::websocket::events::{Commit, Kind};
 
@@ -92,6 +93,7 @@ pub async fn handle_event(db: &Surreal<Any>, event: Kind) -> Result<()> {
 }
 
 /// If the new commit is a create or update, handle it
+#[instrument(skip(db, record))]
 pub async fn on_commit_event_createorupdate(
     db: &Surreal<Any>,
     did: Did,
@@ -132,7 +134,12 @@ pub async fn on_commit_event_createorupdate(
                 extra_data: process_extra_data(&d.extra_data)?,
             };
             // TODO this should be a db.upsert(...).merge(...)
-            let _: Option<Record> = db.upsert(("did", did_key)).content(profile).await?;
+            let _: Option<Record> = db
+                .upsert(("did", did_key))
+                .content(profile)
+                .into_future()
+                .instrument(span!(Level::INFO, "upsert"))
+                .await?;
         }
         KnownRecord::AppBskyGraphFollow(d) => {
             // TODO ensure_valid_rkey_strict(rkey.as_str())?;
@@ -146,7 +153,11 @@ pub async fn on_commit_event_createorupdate(
                 from, to, id, created_at
             );
 
-            let _ = db.query(query).await?;
+            let _ = db
+                .query(query)
+                .into_future()
+                .instrument(span!(Level::INFO, "query"))
+                .await?;
         }
         KnownRecord::AppBskyFeedLike(d) => {
             // TODO ensure_valid_rkey_strict(rkey.as_str())?;
@@ -160,7 +171,11 @@ pub async fn on_commit_event_createorupdate(
                 from, to, id, created_at
             );
 
-            let _ = db.query(query).await?;
+            let _ = db
+                .query(query)
+                .into_future()
+                .instrument(span!(Level::INFO, "query"))
+                .await?;
         }
         KnownRecord::AppBskyFeedRepost(d) => {
             // TODO ensure_valid_rkey_strict(rkey.as_str())?;
@@ -174,7 +189,11 @@ pub async fn on_commit_event_createorupdate(
                 from, to, id, created_at
             );
 
-            let _ = db.query(query).await?;
+            let _ = db
+                .query(query)
+                .into_future()
+                .instrument(span!(Level::INFO, "query"))
+                .await?;
         }
         KnownRecord::AppBskyGraphBlock(d) => {
             // TODO ensure_valid_rkey_strict(rkey.as_str())?;
@@ -188,7 +207,11 @@ pub async fn on_commit_event_createorupdate(
                 from, to, id, created_at
             );
 
-            let _ = db.query(query).await?;
+            let _ = db
+                .query(query)
+                .into_future()
+                .instrument(span!(Level::INFO, "query"))
+                .await?;
         }
         KnownRecord::AppBskyGraphListblock(d) => {
             // TODO ensure_valid_rkey_strict(rkey.as_str())?;
@@ -202,7 +225,11 @@ pub async fn on_commit_event_createorupdate(
                 from, to, id, created_at
             );
 
-            let _ = db.query(query).await?;
+            let _ = db
+                .query(query)
+                .into_future()
+                .instrument(span!(Level::INFO, "query"))
+                .await?;
         }
         KnownRecord::AppBskyGraphListitem(d) => {
             // TODO ensure_valid_rkey_strict(rkey.as_str())?;
@@ -218,7 +245,11 @@ pub async fn on_commit_event_createorupdate(
                 from, to, id, created_at
             );
 
-            let _ = db.query(query).await?;
+            let _ = db
+                .query(query)
+                .into_future()
+                .instrument(span!(Level::INFO, "query"))
+                .await?;
         }
         KnownRecord::AppBskyFeedGenerator(d) => {
             let did_key = utils::did_to_key(did.as_str())?;
@@ -238,7 +269,12 @@ pub async fn on_commit_event_createorupdate(
                 ),
                 extra_data: process_extra_data(&d.extra_data)?,
             };
-            let _: Option<Record> = db.upsert(("feed", id)).content(feed).await?;
+            let _: Option<Record> = db
+                .upsert(("feed", id))
+                .content(feed)
+                .into_future()
+                .instrument(span!(Level::INFO, "upsert"))
+                .await?;
         }
         KnownRecord::AppBskyGraphList(d) => {
             let did_key = utils::did_to_key(did.as_str())?;
@@ -256,7 +292,12 @@ pub async fn on_commit_event_createorupdate(
                 purpose: d.purpose.clone(),
                 extra_data: process_extra_data(&d.extra_data)?,
             };
-            let _: Option<Record> = db.upsert(("list", id)).content(list).await?;
+            let _: Option<Record> = db
+                .upsert(("list", id))
+                .content(list)
+                .into_future()
+                .instrument(span!(Level::INFO, "upsert"))
+                .await?;
         }
         KnownRecord::AppBskyFeedThreadgate(d) => {
             let did_key = utils::did_to_key(did.as_str())?;
@@ -264,6 +305,8 @@ pub async fn on_commit_event_createorupdate(
             let _: Option<Record> = db
                 .upsert(("lex_app_bsky_feed_threadgate", id))
                 .content(d)
+                .into_future()
+                .instrument(span!(Level::INFO, "upsert"))
                 .await?;
         }
         KnownRecord::AppBskyGraphStarterpack(d) => {
@@ -272,6 +315,8 @@ pub async fn on_commit_event_createorupdate(
             let _: Option<Record> = db
                 .upsert(("lex_app_bsky_graph_starterpack", id))
                 .content(d)
+                .into_future()
+                .instrument(span!(Level::INFO, "upsert"))
                 .await?;
         }
         KnownRecord::AppBskyFeedPostgate(d) => {
@@ -280,6 +325,8 @@ pub async fn on_commit_event_createorupdate(
             let _: Option<Record> = db
                 .upsert(("lex_app_bsky_feed_postgate", id))
                 .content(d)
+                .into_future()
+                .instrument(span!(Level::INFO, "upsert"))
                 .await?;
         }
         KnownRecord::ChatBskyActorDeclaration(d) => {
@@ -288,6 +335,8 @@ pub async fn on_commit_event_createorupdate(
             let _: Option<Record> = db
                 .upsert(("lex_chat_bsky_actor_declaration", id))
                 .content(d)
+                .into_future()
+                .instrument(span!(Level::INFO, "upsert"))
                 .await?;
         }
         KnownRecord::AppBskyLabelerService(d) => {
@@ -296,6 +345,8 @@ pub async fn on_commit_event_createorupdate(
             let _: Option<Record> = db
                 .upsert(("lex_app_bsky_labeler_service", id))
                 .content(d)
+                .into_future()
+                .instrument(span!(Level::INFO, "upsert"))
                 .await?;
         }
         KnownRecord::AppBskyFeedPost(d) => {
@@ -379,7 +430,11 @@ pub async fn on_commit_event_createorupdate(
                         id
                     );
 
-                    let _ = db.query(query).await?;
+                    let _ = db
+                        .query(query)
+                        .into_future()
+                        .instrument(span!(Level::INFO, "query"))
+                        .await?;
                 }
             }
 
@@ -449,14 +504,23 @@ pub async fn on_commit_event_createorupdate(
                 extra_data: process_extra_data(&d.extra_data)?,
             };
             let parent = post.parent.clone();
-            let _: Option<Record> = db.upsert(("post", id.clone())).content(post).await?;
+            let _: Option<Record> = db
+                .upsert(("post", id.clone()))
+                .content(post)
+                .into_future()
+                .instrument(span!(Level::INFO, "upsert"))
+                .await?;
 
             if parent.is_some() {
                 let query1 = format!(
                     "RELATE did:{}->replies->post:{} SET id = '{}';",
                     did_key, id, id
                 );
-                let _ = db.query(query1).await?;
+                let _ = db
+                    .query(query1)
+                    .into_future()
+                    .instrument(span!(Level::INFO, "query"))
+                    .await?;
 
                 let query2 = format!(
                     "RELATE post:{}->replyto->{} SET id = '{}';",
@@ -464,13 +528,21 @@ pub async fn on_commit_event_createorupdate(
                     parent.unwrap(),
                     id
                 );
-                let _ = db.query(query2).await?;
+                let _ = db
+                    .query(query2)
+                    .into_future()
+                    .instrument(span!(Level::INFO, "query"))
+                    .await?;
             } else {
                 let query = format!(
                     "RELATE did:{}->posts->post:{} SET id = '{}';",
                     did_key, id, id
                 );
-                let _ = db.query(query).await?;
+                let _ = db
+                    .query(query)
+                    .into_future()
+                    .instrument(span!(Level::INFO, "query"))
+                    .await?;
             }
         }
         _ => {
