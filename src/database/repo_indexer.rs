@@ -30,7 +30,9 @@ pub struct LastIndexedTimestamp {
 /// An ID that was used before the earliest data we are interested in
 const OLDEST_USEFUL_ANCHOR: &str = "3juj4";
 /// The size of the buffer between each pipeline stage in elements
-const BUFFER_SIZE: usize = 1;
+const BUFFER_SIZE: usize = 30;
+/// Buffer size multiplier for the download stage
+const DOWNLOAD_BUFFER_SIZE: usize = 6;
 
 pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
     let http_client = Client::new();
@@ -78,7 +80,7 @@ pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
             result.ok()
         })
         .map(|item| async { item.download_repo().await })
-        .buffer_unordered(BUFFER_SIZE)
+        .buffer_unordered(BUFFER_SIZE * DOWNLOAD_BUFFER_SIZE)
         .filter_map(|result| async {
             if let Err(error) = &result {
                 error!(target: "indexer", "Failed to index repo: {}", error);
