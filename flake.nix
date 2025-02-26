@@ -56,6 +56,7 @@
             pkgs.rust-analyzer-nightly
 
             pkgs.openssl
+            pkgs.curl
             pkgs.pkg-config
             pkgs.clang
 
