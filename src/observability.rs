@@ -100,10 +100,10 @@ pub async fn init_observability() -> Arc<OtelGuard> {
     let tokio_console_layer = console_subscriber::spawn();
 
     // Prints logs to stdout
-    let stdout_filter = EnvFilter::new("info").add_directive("opentelemetry=info".parse().unwrap());
-    let stdout_layer = tracing_subscriber::fmt::layer()
-        .with_thread_names(true)
-        .with_filter(stdout_filter);
+    // let stdout_filter = EnvFilter::new("info").add_directive("opentelemetry=info".parse().unwrap());
+    // let stdout_layer = tracing_subscriber::fmt::layer()
+    //     .with_thread_names(true)
+    //     .with_filter(stdout_filter);
 
     // Exports tracing traces to opentelemetry
     let tracing_filter = EnvFilter::new("info")
@@ -120,7 +120,7 @@ pub async fn init_observability() -> Arc<OtelGuard> {
     tracing_subscriber::registry()
         .with(tokio_console_layer)
         .with(otel_log_layer)
-        .with(stdout_layer)
+        // .with(stdout_layer)
         .with(tracing_opentelemetry::MetricsLayer::new(
             meter_provider.clone(),
         ))
