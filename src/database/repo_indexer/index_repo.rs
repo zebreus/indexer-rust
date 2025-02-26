@@ -4,14 +4,14 @@ use atrium_api::{
     record::KnownRecord,
     types::string::{Did, RecordKey},
 };
-use futures::TryStreamExt;
+use futures::{stream::FuturesUnordered, TryStreamExt};
 use hyper::body::Bytes;
 use ipld_core::cid::{Cid, CidGeneric};
 use iroh_car::CarReader;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_ipld_dagcbor::from_reader;
-use std::{collections::BTreeMap, string::FromUtf8Error, sync::LazyLock, time::Duration};
+use std::{collections::HashMap, string::FromUtf8Error, sync::LazyLock, time::Duration};
 use surrealdb::{engine::any::Any, Surreal};
 use tokio::task::spawn_blocking;
 use tracing::{info, instrument, span, trace, warn, Level, Span};
@@ -68,7 +68,7 @@ pub struct NodeData {
     pub entries: Vec<TreeEntry>,
 }
 
-struct DatabaseUpdate {
+pub struct DatabaseUpdate {
     collection: String,
     rkey: RecordKey,
     record: KnownRecord,
@@ -76,9 +76,9 @@ struct DatabaseUpdate {
 
 /// Insert a file into a map
 async fn insert_into_map(
-    mut files: BTreeMap<ipld_core::cid::Cid, Vec<u8>>,
+    mut files: HashMap<ipld_core::cid::Cid, Vec<u8>>,
     file: (CidGeneric<64>, Vec<u8>),
-) -> anyhow::Result<BTreeMap<ipld_core::cid::Cid, Vec<u8>>> {
+) -> anyhow::Result<HashMap<ipld_core::cid::Cid, Vec<u8>>> {
     let (cid, data) = file;
     files.insert(cid, data);
     Ok(files)
@@ -87,7 +87,7 @@ async fn insert_into_map(
 /// Convert downloaded files into database updates. Blocks the thread
 #[instrument(skip_all)]
 fn files_to_updates_blocking(
-    files: BTreeMap<Cid, Vec<u8>>,
+    files: HashMap<Cid, Vec<u8>>,
 ) -> Result<Vec<DatabaseUpdate>, FromUtf8Error> {
     // TODO: Understand this logic and whether this can be done streaming
     let mut result = Vec::new();
@@ -172,13 +172,13 @@ async fn download_repo(
 
 /// Download the file for the given repo into a map
 #[instrument(skip_all)]
-async fn deserialize_repo(bytes: Bytes) -> anyhow::Result<BTreeMap<Cid, Vec<u8>>> {
+async fn deserialize_repo(bytes: Bytes) -> anyhow::Result<HashMap<Cid, Vec<u8>>> {
     // TODO: Benchmark CarReader. This is probably not the right place for parsing logic
     let car_reader = CarReader::new(bytes.as_ref()).await?;
     let files = car_reader
         .stream()
         .map_err(|e| e.into())
-        .try_fold(BTreeMap::new(), insert_into_map)
+        .try_fold(HashMap::new(), insert_into_map)
         .await;
 
     files
@@ -186,7 +186,7 @@ async fn deserialize_repo(bytes: Bytes) -> anyhow::Result<BTreeMap<Cid, Vec<u8>>
 
 /// Convert downloaded files into database updates
 #[instrument(skip_all)]
-async fn files_to_updates(files: BTreeMap<Cid, Vec<u8>>) -> anyhow::Result<Vec<DatabaseUpdate>> {
+async fn files_to_updates(files: HashMap<Cid, Vec<u8>>) -> anyhow::Result<Vec<DatabaseUpdate>> {
     // TODO: Look into using block_in_place instead of spawn_blocking
     let result = spawn_blocking(|| files_to_updates_blocking(files)).await??;
     Ok(result)
@@ -202,21 +202,33 @@ async fn apply_updates(
 ) -> anyhow::Result<()> {
     let did_key = crate::database::utils::did_to_key(did)?;
 
-    for update in updates {
-        let res = on_commit_event_createorupdate(
-            db,
-            Did::new(did.into()).unwrap(),
-            did_key.clone(),
-            update.collection,
-            update.rkey,
-            update.record,
-        )
-        .await;
+    let futures: Vec<_> = updates
+        .into_iter()
+        .map(|update| {
+            let db = db.clone();
+            let did_key = did_key.clone();
+            let did = did.to_string();
+            tokio::spawn(async move {
+                let res = on_commit_event_createorupdate(
+                    &db,
+                    Did::new(did.clone().into()).unwrap(),
+                    did_key,
+                    update.collection,
+                    update.rkey,
+                    update.record,
+                )
+                .await;
 
-        if let Err(error) = res {
-            warn!("on_commit_event_createorupdate {} {}", error, did);
-        }
+                if let Err(error) = res {
+                    warn!("on_commit_event_createorupdate {} {}", error, did);
+                }
+            })
+        })
+        .collect();
+    for f in futures.into_iter() {
+        f.await;
     }
+
     let _: Option<Record> = db
         .upsert(("li_did", did_key))
         .content(LastIndexedTimestamp {
@@ -274,12 +286,12 @@ pub struct WithRepo {
 
 pub struct WithFiles {
     now: std::time::Duration,
-    files: BTreeMap<ipld_core::cid::Cid, Vec<u8>>,
+    files: HashMap<ipld_core::cid::Cid, Vec<u8>>,
 }
 /// Has converted the files to update
 pub struct WithUpdates {
     now: std::time::Duration,
-    updates: Vec<DatabaseUpdate>,
+    pub updates: Vec<DatabaseUpdate>,
 }
 /// Updates have been applied
 pub struct Done {}
@@ -289,7 +301,7 @@ pub struct PipelineItem<'a, State> {
     http_client: &'a Client,
     did: String,
     span: Span,
-    state: State,
+    pub state: State,
 }
 
 impl<'a> PipelineItem<'a, New> {

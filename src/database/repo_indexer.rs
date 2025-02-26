@@ -157,9 +157,11 @@ pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
         ))
         .buffer_unordered(BUFFER_SIZE * DOWNLOAD_BUFFER_SIZE)
         .filter_map(filter_result!(tracker, "deserialize_repo"))
-        .map(stage!(tracker, "deserialize_repo", "parse_repo", item ->
-            item.deserialize_repo().await
-        ))
+        .map(
+            stage!(tracker, "deserialize_repo", "files_to_updates", item ->
+                item.deserialize_repo().await
+            ),
+        )
         .buffer_unordered(BUFFER_SIZE)
         .filter_map(filter_result!(tracker, "files_to_updates"))
         .map(stage!(tracker, "files_to_updates", "apply_updates", item ->
@@ -168,7 +170,9 @@ pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
         .buffer_unordered(BUFFER_SIZE)
         .filter_map(filter_result!(tracker, "apply_updates"))
         .map(stage!(tracker, "apply_updates", "print_report", item ->
-            item.apply_updates().await
+            {
+                // println!("Items: {:?}", item.state.updates.len());
+                item.apply_updates().await}
         ))
         .buffer_unordered(BUFFER_SIZE)
         .filter_map(filter_result!(tracker, "print_report"))
