@@ -38,6 +38,7 @@ const DOWNLOAD_BUFFER_SIZE: usize = 6;
 macro_rules! stage {
     ($metric:ident, $stage:literal, $next:literal, $item:ident -> $content:expr) => {
         |$item| async {
+            // TODO: Dont create new keyvalues every time
             $metric.add(
                 -1,
                 &[
