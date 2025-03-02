@@ -68,3 +68,4 @@ sysinfo = "0.33.1"
 lto = "thin"
 strip = false
 opt-level = 3
+incremental = true
