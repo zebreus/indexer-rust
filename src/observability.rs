@@ -91,7 +91,7 @@ pub async fn init_observability() -> Arc<OtelGuard> {
     let logger_provider = init_logger();
 
     // Exports tokio stats for tokio-console
-    let tokio_console_enabled = ARGS.console;
+    let tokio_console_enabled = ARGS.console.unwrap_or(false);
     let tokio_console_filter = FilterFn::new(move |_| tokio_console_enabled);
     let tokio_console_layer = console_subscriber::spawn().with_filter(tokio_console_filter);
 
@@ -105,7 +105,7 @@ pub async fn init_observability() -> Arc<OtelGuard> {
     let registry = tracing_subscriber::registry()
         .with(stdout_layer)
         .with(tokio_console_layer);
-    if ARGS.otel {
+    if ARGS.otel.unwrap_or(true) {
         // Exports logs to otel
         let otel_log_filter = EnvFilter::new("info")
             .add_directive("hyper=off".parse().unwrap())
@@ -122,7 +122,7 @@ pub async fn init_observability() -> Arc<OtelGuard> {
                 .with(tracing_opentelemetry::MetricsLayer::new(
                     meter_provider.clone(),
                 ));
-        if ARGS.otel_tracing {
+        if ARGS.otel_tracing.unwrap_or(true) {
             // Exports tracing traces to opentelemetry
             let tracing_filter = EnvFilter::new("info")
                 .add_directive("hyper=off".parse().unwrap())

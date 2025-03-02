@@ -1,8 +1,5 @@
-use std::sync::LazyLock;
-
 use clap::{ArgAction, Parser};
-use colored::Colorize;
-use tracing::{info, level_filters::LevelFilter};
+use std::sync::LazyLock;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -30,11 +27,11 @@ pub struct Args {
     #[arg(short, action = ArgAction::Count)]
     pub verbosity: u8,
     /// Enable backfilling of old repos
-    #[arg(long, default_value = "true")]
-    pub backfill: bool,
+    #[arg(long, default_value = "true", default_missing_value = "true", num_args=0..=1)]
+    pub backfill: Option<bool>,
     /// Enable attaching to the jetstream for realtime updates
-    #[arg(long, default_value = "true")]
-    pub jetstream: bool,
+    #[arg(long, default_value = "true", default_missing_value = "true", num_args=0..=1)]
+    pub jetstream: Option<bool>,
     /// Capacity of the surrealdb connection. 0 means unbounded
     #[arg(long, default_value = "0")]
     pub surrealdb_capacity: usize,
@@ -42,58 +39,53 @@ pub struct Args {
     #[arg(long, default_value = "10")]
     pub pipeline_buffer_size: usize,
     /// Enable tokio console support
-    #[arg(long, default_value = "false")]
-    pub console: bool,
+    #[arg(long, default_value = "false", default_missing_value = "true", num_args=0..=1)]
+    pub console: Option<bool>,
     /// Enable opentelemetry tracing support
-    #[arg(long, default_value = "true")]
-    pub otel_tracing: bool,
+    #[arg(long, default_value = "true", default_missing_value = "true", num_args=0..=1)]
+    pub otel_tracing: Option<bool>,
     /// Enable opentelemetry
-    #[arg(long, default_value = "true")]
-    pub otel: bool,
+    #[arg(long, default_value = "true", default_missing_value = "true", num_args=0..=1)]
+    pub otel: Option<bool>,
 }
 
-pub const ARGS: LazyLock<Args> = LazyLock::new(|| parse_args());
+pub const ARGS: LazyLock<Args> = LazyLock::new(|| Args::parse());
 
-impl Args {
-    /// Dump configuration to log
-    pub fn dump(self: &Self) {
-        // dump configuration
-        info!("{}", "Configuration:".bold().underline().blue());
-        info!("{}: {}", "Certificate".cyan(), self.certificate.green());
-        info!(
-            "{}: {}",
-            "Threads".cyan(),
-            self.threads.map_or_else(
-                || "Not set, using CPU count".yellow(),
-                |v| v.to_string().green()
-            )
-        );
-        info!(
-            "{}: {}",
-            "Max tasks".cyan(),
-            self.max_tasks.map_or_else(
-                || "Not set, using CPU count times 32".yellow(),
-                |v| v.to_string().green()
-            )
-        );
-        info!(
-            "{}: {}",
-            "Verbosity Level".cyan(),
-            self.log_level().to_string().green()
-        );
-    }
+// impl Args {
+//     /// Dump configuration to log
+//     pub fn dump(self: &Self) {
+//         // dump configuration
+//         info!("{}", "Configuration:".bold().underline().blue());
+//         info!("{}: {}", "Certificate".cyan(), self.certificate.green());
+//         info!(
+//             "{}: {}",
+//             "Threads".cyan(),
+//             self.threads.map_or_else(
+//                 || "Not set, using CPU count".yellow(),
+//                 |v| v.to_string().green()
+//             )
+//         );
+//         info!(
+//             "{}: {}",
+//             "Max tasks".cyan(),
+//             self.max_tasks.map_or_else(
+//                 || "Not set, using CPU count times 32".yellow(),
+//                 |v| v.to_string().green()
+//             )
+//         );
+//         info!(
+//             "{}: {}",
+//             "Verbosity Level".cyan(),
+//             self.log_level().to_string().green()
+//         );
+//     }
 
-    /// Verbosity to log level
-    pub fn log_level(self: &Self) -> LevelFilter {
-        match self.verbosity {
-            0 => LevelFilter::INFO,
-            1 => LevelFilter::DEBUG,
-            _ => LevelFilter::TRACE,
-        }
-    }
-}
-
-/// Parse command line arguments
-pub fn parse_args() -> Args {
-    Args::parse()
-}
+//     /// Verbosity to log level
+//     pub fn log_level(self: &Self) -> LevelFilter {
+//         match self.verbosity {
+//             0 => LevelFilter::INFO,
+//             1 => LevelFilter::DEBUG,
+//             _ => LevelFilter::TRACE,
+//         }
+//     }
+// }

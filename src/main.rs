@@ -1,5 +1,5 @@
 use anyhow::Context;
-use config::{Args, ARGS};
+use config::ARGS;
 use database::repo_indexer::start_full_repo_indexer;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use jetstream_consumer::attach_jetstream;
@@ -29,11 +29,13 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Entry point for the application
 fn main() {
-    // build async runtime
+    // Build async runtime
     let mut rt_builder = Builder::new_multi_thread();
     rt_builder
         .enable_all()
         .max_blocking_threads(512 * 512)
+        .enable_time()
+        .enable_io()
         .max_io_events_per_tick(1024 * 512)
         .thread_name_fn(|| {
             static ATOMIC: AtomicUsize = AtomicUsize::new(0);
@@ -45,7 +47,7 @@ fn main() {
     }
     let rt = rt_builder.build().unwrap();
 
-    // launch the application
+    // Launch the async main function
     default_provider().install_default().unwrap();
     let err = rt.block_on(application_main());
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -76,10 +78,10 @@ async fn application_main() -> anyhow::Result<()> {
     let mut tasks: FuturesUnordered<Pin<Box<dyn Future<Output = Result<(), anyhow::Error>>>>> =
         FuturesUnordered::new();
     tasks.push(metrics_task);
-    if ARGS.jetstream {
+    if ARGS.jetstream.unwrap_or(true) {
         tasks.push(jetstream_task);
     }
-    if ARGS.backfill {
+    if ARGS.backfill.unwrap_or(true) {
         tasks.push(indexer_task);
     }
 
