@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use clap::{ArgAction, Parser};
 use colored::Colorize;
 use tracing::{info, level_filters::LevelFilter};
@@ -30,7 +32,24 @@ pub struct Args {
     /// Indexer Mode (jetstream only or full)
     #[arg(long, default_value = "jetstream")]
     pub mode: String,
+    /// Capacity of the surrealdb connection. 0 means unbounded
+    #[arg(long, default_value = "0")]
+    pub surrealdb_capacity: usize,
+    /// Size of the buffer between each pipeline stage in elements
+    #[arg(long, default_value = "10")]
+    pub pipeline_buffer_size: usize,
+    /// Enable tokio console support
+    #[arg(long, default_value = "false")]
+    pub console: bool,
+    /// Enable opentelemetry tracing support
+    #[arg(long, default_value = "true")]
+    pub otel_tracing: bool,
+    /// Enable opentelemetry
+    #[arg(long, default_value = "true")]
+    pub otel: bool,
 }
+
+pub const ARGS: LazyLock<Args> = LazyLock::new(|| parse_args());
 
 impl Args {
     /// Dump configuration to log

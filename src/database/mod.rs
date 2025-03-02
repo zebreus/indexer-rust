@@ -3,6 +3,8 @@ use definitions::{JetstreamCursor, Record};
 use surrealdb::{engine::any::Any, opt::auth::Root, RecordId, Surreal};
 use tracing::{debug, info};
 
+use crate::config::ARGS;
+
 pub mod definitions;
 pub mod handlers;
 pub mod repo_indexer;
@@ -10,13 +12,16 @@ mod utils;
 
 /// Connect to the database
 pub async fn connect(
-    db_endpoint: String,
+    db_endpoint: &str,
     username: &str,
     password: &str,
 ) -> anyhow::Result<Surreal<Any>> {
     // connect to the database
     info!(target: "indexer", "Connecting to the database at {}", db_endpoint);
-    let db = surrealdb::engine::any::connect(db_endpoint).await?;
+    // let db = Surreal::new::<_>(db_endpoint).await?;
+    let db = surrealdb::engine::any::connect(db_endpoint)
+        .with_capacity(ARGS.surrealdb_capacity)
+        .await?;
 
     // sign in to the server
 

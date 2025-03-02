@@ -23,7 +23,11 @@ use std::{
 };
 use surrealdb::Uuid;
 use tokio::signal::ctrl_c;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{
+    filter::FilterFn, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
+};
+
+use crate::config::ARGS;
 
 const RESOURCE: LazyLock<Resource> = LazyLock::new(|| {
     let instance_id = Uuid::new_v4();
@@ -86,46 +90,56 @@ pub async fn init_observability() -> Arc<OtelGuard> {
     let meter_provider = init_meter();
     let logger_provider = init_logger();
 
-    // Exports logs to otel
-    let otel_log_filter = EnvFilter::new("info")
-        .add_directive("hyper=off".parse().unwrap())
-        .add_directive("h2=off".parse().unwrap())
-        .add_directive("opentelemetry=off".parse().unwrap())
-        .add_directive("tonic=off".parse().unwrap())
-        .add_directive("reqwest=off".parse().unwrap());
-    let otel_log_layer =
-        OpenTelemetryTracingBridge::new(&logger_provider).with_filter(otel_log_filter);
-
     // Exports tokio stats for tokio-console
-    let tokio_console_layer = console_subscriber::spawn();
+    let tokio_console_enabled = ARGS.console;
+    let tokio_console_filter = FilterFn::new(move |_| tokio_console_enabled);
+    let tokio_console_layer = console_subscriber::spawn().with_filter(tokio_console_filter);
 
     // Prints logs to stdout
-    // let stdout_filter = EnvFilter::new("info").add_directive("opentelemetry=info".parse().unwrap());
-    // let stdout_layer = tracing_subscriber::fmt::layer()
-    //     .with_thread_names(true)
-    //     .with_filter(stdout_filter);
-
-    // Exports tracing traces to opentelemetry
-    let tracing_filter = EnvFilter::new("info")
-        .add_directive("hyper=off".parse().unwrap())
-        .add_directive("h2=off".parse().unwrap())
-        .add_directive("opentelemetry=off".parse().unwrap())
-        .add_directive("tonic=off".parse().unwrap())
-        .add_directive("reqwest=off".parse().unwrap());
-    let tracer = tracer_provider.tracer("tracing-otel-subscriber");
-    let tracing_layer =
-        tracing_opentelemetry::OpenTelemetryLayer::new(tracer).with_filter(tracing_filter);
+    let stdout_filter = EnvFilter::new("info").add_directive("opentelemetry=info".parse().unwrap());
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .with_thread_names(true)
+        .with_filter(stdout_filter);
 
     // Add all layers
-    tracing_subscriber::registry()
-        .with(tokio_console_layer)
-        .with(otel_log_layer)
-        // .with(stdout_layer)
-        .with(tracing_opentelemetry::MetricsLayer::new(
-            meter_provider.clone(),
-        ))
-        .with(tracing_layer)
-        .init();
+    let registry = tracing_subscriber::registry()
+        .with(stdout_layer)
+        .with(tokio_console_layer);
+    if ARGS.otel {
+        // Exports logs to otel
+        let otel_log_filter = EnvFilter::new("info")
+            .add_directive("hyper=off".parse().unwrap())
+            .add_directive("h2=off".parse().unwrap())
+            .add_directive("opentelemetry=off".parse().unwrap())
+            .add_directive("tonic=off".parse().unwrap())
+            .add_directive("reqwest=off".parse().unwrap());
+        let otel_log_layer =
+            OpenTelemetryTracingBridge::new(&logger_provider).with_filter(otel_log_filter);
+
+        let registry_with_otel =
+            registry
+                .with(otel_log_layer)
+                .with(tracing_opentelemetry::MetricsLayer::new(
+                    meter_provider.clone(),
+                ));
+        if ARGS.otel_tracing {
+            // Exports tracing traces to opentelemetry
+            let tracing_filter = EnvFilter::new("info")
+                .add_directive("hyper=off".parse().unwrap())
+                .add_directive("h2=off".parse().unwrap())
+                .add_directive("opentelemetry=off".parse().unwrap())
+                .add_directive("tonic=off".parse().unwrap())
+                .add_directive("reqwest=off".parse().unwrap());
+            let tracer = tracer_provider.tracer("tracing-otel-subscriber");
+            let tracing_layer =
+                tracing_opentelemetry::OpenTelemetryLayer::new(tracer).with_filter(tracing_filter);
+            registry_with_otel.with(tracing_layer).init();
+        } else {
+            registry_with_otel.init();
+        };
+    } else {
+        registry.init();
+    };
 
     // TODO: Replace this hacky mess with something less broken
     let guard = Arc::new(OtelGuard {

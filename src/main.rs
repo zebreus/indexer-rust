@@ -1,7 +1,7 @@
 #![feature(type_changing_struct_update)]
 
 use anyhow::Context;
-use config::Args;
+use config::{Args, ARGS};
 use database::repo_indexer::start_full_repo_indexer;
 use jetstream_consumer::attach_jetstream;
 use metrics_reporter::export_system_metrics;
@@ -27,7 +27,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Entry point for the application
 fn main() {
-    let args = config::parse_args();
+    let args = ARGS;
     args.dump();
 
     // build async runtime
@@ -60,7 +60,7 @@ fn main() {
 
     // launch the application
     default_provider().install_default().unwrap();
-    let err = rt.block_on(application_main(args));
+    let err = rt.block_on(application_main());
     if let Err(e) = &err {
         error!(target: "indexer", "{:?}", e);
         exit(1);
@@ -68,22 +68,22 @@ fn main() {
 }
 
 /// Asynchronous main function
-async fn application_main(args: Args) -> anyhow::Result<()> {
+async fn application_main() -> anyhow::Result<()> {
     let _otel_guard = init_observability().await;
 
     // connect to the database
-    let db = database::connect(args.db, &args.username, &args.password)
+    let db = database::connect(&ARGS.db, &ARGS.username, &ARGS.password)
         .await
         .context("Failed to connect to the database")?;
 
     let metrics_task = tokio::spawn(export_system_metrics());
-    let jetstream_task = tokio::spawn(attach_jetstream(db.clone(), args.certificate.clone()));
-    if args.mode == "full" {
+    // let jetstream_task = tokio::spawn(attach_jetstream(db.clone(), args.certificate.clone()));
+    if ARGS.mode == "full" {
         start_full_repo_indexer(db.clone()).await?;
     }
 
     // TODO: To something smart if one of the tasks exits
     metrics_task.await??;
-    jetstream_task.await??;
+    // jetstream_task.await??;
     Ok(())
 }

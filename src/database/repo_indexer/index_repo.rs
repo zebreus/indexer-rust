@@ -226,7 +226,7 @@ async fn apply_updates(
         })
         .collect();
     for f in futures.into_iter() {
-        f.await;
+        f.await?;
     }
 
     let _: Option<Record> = db
