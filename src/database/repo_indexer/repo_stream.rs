@@ -10,25 +10,20 @@ use tracing::info;
 
 use crate::database::{repo_indexer::BskyFollowRes, utils::unsafe_user_key_to_did};
 
-pub struct RepoStream<'a> {
+pub struct RepoStream {
     buffer: VecDeque<String>,
     processed_dids: HashSet<String>,
     anchor: String,
-    db: &'a Surreal<Any>,
+    db: Surreal<Any>,
     db_future: Option<
         std::pin::Pin<
-            Box<
-                dyn Future<Output = Result<surrealdb::Response, surrealdb::Error>>
-                    + Send
-                    + Sync
-                    + 'a,
-            >,
+            Box<dyn Future<Output = Result<surrealdb::Response, surrealdb::Error>> + Send>,
         >,
     >,
 }
 
-impl<'a> RepoStream<'a> {
-    pub fn new(anchor: String, db: &'a Surreal<Any>) -> Self {
+impl RepoStream {
+    pub fn new(anchor: String, db: Surreal<Any>) -> Self {
         return Self {
             buffer: VecDeque::new(),
             processed_dids: HashSet::new(),
@@ -39,7 +34,7 @@ impl<'a> RepoStream<'a> {
     }
 }
 
-const FETCH_AMOUNT: usize = 100;
+const FETCH_AMOUNT: usize = 10000;
 
 // async fn get_repos_from(db: &Surreal<Any>, anchor: &str) -> Vec<String> {
 //     info!(target: "indexer", "Discovering follows starting from {}", anchor);
@@ -57,7 +52,7 @@ const FETCH_AMOUNT: usize = 100;
 //     };
 // }
 
-impl<'a> Stream for RepoStream<'a> {
+impl Stream for RepoStream {
     type Item = String;
 
     fn poll_next(
@@ -70,28 +65,19 @@ impl<'a> Stream for RepoStream<'a> {
             }
 
             info!(target: "indexer", "Discovering follows starting from {}", self.anchor);
-            let db_future = if self.db_future.is_some() {
-                self.db_future.as_mut().unwrap()
-            } else {
-                let result = self
-                    .db
-                    // TODO: Fix the possible SQL injection
-                    .query(format!(
-                        "SELECT id,in,out FROM follow:{}.. LIMIT {};",
-                        self.anchor, FETCH_AMOUNT
-                    ));
-                // let mut future: std::pin::Pin<
-                //     Box<
-                //         dyn Future<Output = Result<surrealdb::Response, surrealdb::Error>>
-                //             + Send
-                //             + Sync
-                //             + 'a,
-                //     >,
-                // >
-                let future = result.into_future();
-                self.db_future = Some(future);
-                self.db_future.as_mut().unwrap()
-            };
+            if self.db_future.is_none() {
+                self.db_future = Some(
+                    self.db
+                        // TODO: Fix the possible SQL injection
+                        .query(format!(
+                            "SELECT id,in,out FROM follow:{}.. LIMIT {};",
+                            self.anchor, FETCH_AMOUNT
+                        ))
+                        .into_owned()
+                        .into_future(),
+                );
+            }
+            let db_future = self.db_future.as_mut().unwrap();
 
             let Poll::Ready(result) = Future::poll(db_future.as_mut(), cx) else {
                 return Poll::Pending;
@@ -100,18 +86,9 @@ impl<'a> Stream for RepoStream<'a> {
 
             let mut result = result.unwrap();
 
-            // let mut result: surrealdb::method::Query<'_, Any> = self
-            //     .db
-            //     // TODO: Fix the possible SQL injection
-            //     .query(format!(
-            //         "SELECT id,in,out FROM follow:{}.. LIMIT {};",
-            //         self.anchor, FETCH_AMOUNT
-            //     ));
             let follows: Vec<BskyFollowRes> = result.take(0).unwrap();
 
             let Some(anchor_key) = follows.last().map(|follow| follow.id.key()) else {
-                // sleep(DISCOVERY_CAUGHT_UP_BACKOFF).await;
-                // continue;
                 // TODO: Sleep again
                 return Poll::Pending;
             };
@@ -125,9 +102,6 @@ impl<'a> Stream for RepoStream<'a> {
                     }
                     self.processed_dids.insert(did.clone());
                     self.buffer.push_back(did);
-                    // tx.send(did)
-                    //     .await
-                    //     .context("Failed to send message to handler thread")?;
                 }
             }
 
@@ -135,12 +109,6 @@ impl<'a> Stream for RepoStream<'a> {
                 return Poll::Ready(Some(next));
             }
             return Poll::Pending;
-
-            // Warn if it looks like the queue size or the backoff were choosen incorrectly
-            // let new_follows = self.processed_dids.len() - processed_dids_before;
-            // if new_follows != 0 && follows.len() == fetch_amount && tx.len() < warning_threshold {
-            //     warn!(target: "indexer", "Queue is not getting filled up fast enough. Consider increasing the queue size or decreasing the backoff.");
-            // }
         }
     }
 }

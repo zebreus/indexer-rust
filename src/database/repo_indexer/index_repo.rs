@@ -296,26 +296,22 @@ pub struct WithUpdates {
 /// Updates have been applied
 pub struct Done {}
 
-pub struct PipelineItem<'a, State> {
-    db: &'a Surreal<Any>,
-    http_client: &'a Client,
+pub struct PipelineItem<State> {
+    db: Surreal<Any>,
+    http_client: Client,
     did: String,
     span: Span,
     pub state: State,
 }
 
-impl<'a> PipelineItem<'a, New> {
-    pub fn new(
-        db: &'a Surreal<Any>,
-        http_client: &'a Client,
-        did: String,
-    ) -> PipelineItem<'a, New> {
+impl PipelineItem<New> {
+    pub fn new(db: Surreal<Any>, http_client: Client, did: String) -> PipelineItem<New> {
         let span = span!(target: "backfill", parent: None, Level::INFO, "pipeline_item");
         span.record("did", did.clone());
         span.in_scope(|| {
             trace!("Start backfilling repo");
         });
-        PipelineItem::<'a, New> {
+        PipelineItem::<New> {
             db,
             http_client,
             did,
@@ -325,95 +321,113 @@ impl<'a> PipelineItem<'a, New> {
     }
 }
 
-impl<'a> PipelineItem<'a, New> {
+impl PipelineItem<New> {
     #[instrument(skip(self), parent = &self.span)]
-    pub async fn check_indexed(self) -> anyhow::Result<PipelineItem<'a, NotIndexed>> {
+    pub async fn check_indexed(self) -> anyhow::Result<PipelineItem<NotIndexed>> {
         if check_indexed(&self.db, &self.did).await? {
             // TODO: Handle this better, as this is not really an error
             return Err(anyhow::anyhow!("Already indexed"));
         }
-        Ok(PipelineItem::<'a, NotIndexed> {
+        Ok(PipelineItem::<NotIndexed> {
             state: NotIndexed {},
-            ..self
+            db: self.db,
+            http_client: self.http_client,
+            did: self.did,
+            span: self.span,
         })
     }
 }
 
-impl<'a> PipelineItem<'a, NotIndexed> {
+impl PipelineItem<NotIndexed> {
     #[instrument(skip(self), parent = &self.span)]
-    pub async fn get_service(self) -> anyhow::Result<PipelineItem<'a, WithService>> {
+    pub async fn get_service(self) -> anyhow::Result<PipelineItem<WithService>> {
         let service = get_plc_service(&self.http_client, &self.did).await?;
         let Some(service) = service else {
             // TODO: Handle this better, as this is not really an error
             return Err(anyhow::anyhow!("Failed to get a plc service"));
         };
-        Ok(PipelineItem::<'a, WithService> {
+        Ok(PipelineItem::<WithService> {
             state: WithService {
                 service: service,
                 now: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap(),
             },
-            ..self
+            db: self.db,
+            http_client: self.http_client,
+            did: self.did,
+            span: self.span,
         })
     }
 }
 
-impl<'a> PipelineItem<'a, WithService> {
+impl PipelineItem<WithService> {
     #[instrument(skip(self), parent = &self.span)]
-    pub async fn download_repo(self) -> anyhow::Result<PipelineItem<'a, WithRepo>> {
+    pub async fn download_repo(self) -> anyhow::Result<PipelineItem<WithRepo>> {
         let repo = download_repo(&self.state.service, &self.did).await?;
-        Ok(PipelineItem::<'a, WithRepo> {
+        Ok(PipelineItem::<WithRepo> {
             state: WithRepo {
                 now: self.state.now,
                 repo,
             },
-            ..self
+            db: self.db,
+            http_client: self.http_client,
+            did: self.did,
+            span: self.span,
         })
     }
 }
 
-impl<'a> PipelineItem<'a, WithRepo> {
+impl PipelineItem<WithRepo> {
     #[instrument(skip(self), parent = &self.span)]
-    pub async fn deserialize_repo(self) -> anyhow::Result<PipelineItem<'a, WithFiles>> {
+    pub async fn deserialize_repo(self) -> anyhow::Result<PipelineItem<WithFiles>> {
         info!("Deserializing repo {}", self.did);
         let files = deserialize_repo(self.state.repo).await?;
-        Ok(PipelineItem::<'a, WithFiles> {
+        Ok(PipelineItem::<WithFiles> {
             state: WithFiles {
                 now: self.state.now,
                 files,
             },
-            ..self
+            db: self.db,
+            http_client: self.http_client,
+            did: self.did,
+            span: self.span,
         })
     }
 }
 
-impl<'a> PipelineItem<'a, WithFiles> {
+impl PipelineItem<WithFiles> {
     #[instrument(skip(self), parent = &self.span)]
-    pub async fn files_to_updates(self) -> anyhow::Result<PipelineItem<'a, WithUpdates>> {
+    pub async fn files_to_updates(self) -> anyhow::Result<PipelineItem<WithUpdates>> {
         let updates = files_to_updates(self.state.files).await?;
-        Ok(PipelineItem::<'a, WithUpdates> {
+        Ok(PipelineItem::<WithUpdates> {
             state: WithUpdates {
                 now: self.state.now,
                 updates,
             },
-            ..self
+            db: self.db,
+            http_client: self.http_client,
+            did: self.did,
+            span: self.span,
         })
     }
 }
 
-impl<'a> PipelineItem<'a, WithUpdates> {
+impl PipelineItem<WithUpdates> {
     #[instrument(skip(self), parent = &self.span)]
-    pub async fn apply_updates(self) -> anyhow::Result<PipelineItem<'a, Done>> {
+    pub async fn apply_updates(self) -> anyhow::Result<PipelineItem<Done>> {
         apply_updates(&self.db, &self.did, self.state.updates, &self.state.now).await?;
-        Ok(PipelineItem::<'a, Done> {
+        Ok(PipelineItem::<Done> {
             state: Done {},
-            ..self
+            db: self.db,
+            http_client: self.http_client,
+            did: self.did,
+            span: self.span,
         })
     }
 }
 
-impl<'a> PipelineItem<'a, Done> {
+impl PipelineItem<Done> {
     #[instrument(skip(self), parent = &self.span)]
     pub async fn print_report(self) -> () {
         // TODO: This is only for printing debug stuff

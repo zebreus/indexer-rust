@@ -11,9 +11,9 @@ pub struct Args {
     /// Certificate to check jetstream server against
     #[arg(short = 'c', long, default_value = "/etc/ssl/certs/ISRG_Root_X1.pem")]
     pub certificate: String,
-    /// Override tokio threadpool size for async operations
+    /// Set the tokio threadpool size. The default value is the number of cores available to the system.
     #[arg(long)]
-    pub worker_threads: Option<usize>,
+    pub threads: Option<usize>,
     /// Override parallel task count for full repo index operations
     #[arg(long)]
     pub max_tasks: Option<usize>,
@@ -29,9 +29,12 @@ pub struct Args {
     /// Debug verbosity level
     #[arg(short, action = ArgAction::Count)]
     pub verbosity: u8,
-    /// Indexer Mode (jetstream only or full)
-    #[arg(long, default_value = "jetstream")]
-    pub mode: String,
+    /// Enable backfilling of old repos
+    #[arg(long, default_value = "true")]
+    pub backfill: bool,
+    /// Enable attaching to the jetstream for realtime updates
+    #[arg(long, default_value = "true")]
+    pub jetstream: bool,
     /// Capacity of the surrealdb connection. 0 means unbounded
     #[arg(long, default_value = "0")]
     pub surrealdb_capacity: usize,
@@ -59,8 +62,8 @@ impl Args {
         info!("{}: {}", "Certificate".cyan(), self.certificate.green());
         info!(
             "{}: {}",
-            "Worker Threads".cyan(),
-            self.worker_threads.map_or_else(
+            "Threads".cyan(),
+            self.threads.map_or_else(
                 || "Not set, using CPU count".yellow(),
                 |v| v.to_string().green()
             )

@@ -126,10 +126,10 @@ pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
 
     let buffer_size = ARGS.pipeline_buffer_size;
 
-    RepoStream::new(OLDEST_USEFUL_ANCHOR.to_string(), &db)
+    RepoStream::new(OLDEST_USEFUL_ANCHOR.to_string(), db.clone())
         .map(|did| async {
-            let db = &db;
-            let http_client = &http_client;
+            let db = db.clone();
+            let http_client = http_client.clone();
             let item = PipelineItem::new(db, http_client, did);
 
             tracker.add(
