@@ -60,6 +60,7 @@
             pkgs.pkg-config
             pkgs.clang
 
+            pkgs.samply
             pkgs.tokio-console
           ];
 
@@ -68,7 +69,7 @@
             mkdir -p $DATABASE_DIR
             export DATABASE_DIR
 
-            echo 'cargo run -- --db "rocksdb://'$DATABASE_DIR'" --mode full -c '$(pwd)'/ISRG_Root_X1.pem'
+            echo 'cargo run -- --db "rocksdb://'$DATABASE_DIR'" -c '$(pwd)'/ISRG_Root_X1.pem'
           '';
         };
 
