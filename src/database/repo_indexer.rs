@@ -30,9 +30,9 @@ pub struct LastIndexedTimestamp {
 /// An ID that was used before the earliest data we are interested in
 const OLDEST_USEFUL_ANCHOR: &str = "3juj4";
 /// The size of the buffer between each pipeline stage in elements
-const BUFFER_SIZE: usize = 30;
+const BUFFER_SIZE: usize = 100;
 /// Buffer size multiplier for the download stage
-const DOWNLOAD_BUFFER_SIZE: usize = 6;
+const DOWNLOAD_BUFFER_SIZE: usize = 1;
 
 // Make this less hacky
 macro_rules! stage {
