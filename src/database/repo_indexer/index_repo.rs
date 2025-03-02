@@ -4,7 +4,7 @@ use atrium_api::{
     record::KnownRecord,
     types::string::{Did, RecordKey},
 };
-use futures::{stream::FuturesUnordered, TryStreamExt};
+use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
 use hyper::body::Bytes;
 use ipld_core::cid::{Cid, CidGeneric};
 use iroh_car::CarReader;
@@ -202,35 +202,34 @@ async fn apply_updates(
 ) -> anyhow::Result<()> {
     let did_key = crate::database::utils::did_to_key(did)?;
 
-    let futures: Vec<_> = updates
+    let mut futures: FuturesUnordered<_> = updates
         .into_iter()
-        .map(|update| {
+        .map(|update| async {
             let db = db.clone();
             let did_key = did_key.clone();
             let did = did.to_string();
-            tokio::spawn(async move {
-                let res = on_commit_event_createorupdate(
-                    &db,
-                    Did::new(did.clone().into()).unwrap(),
-                    did_key,
-                    update.collection,
-                    update.rkey,
-                    update.record,
-                )
-                .await;
 
-                if let Err(error) = res {
-                    warn!("on_commit_event_createorupdate {} {}", error, did);
-                }
-            })
+            let res = on_commit_event_createorupdate(
+                &db,
+                Did::new(did.clone().into()).unwrap(),
+                did_key,
+                update.collection,
+                update.rkey,
+                update.record,
+            )
+            .await;
+
+            if let Err(error) = res {
+                warn!("on_commit_event_createorupdate {} {}", error, did);
+            }
         })
         .collect();
-    for f in futures.into_iter() {
-        f.await?;
+    loop {
+        let Some(_) = futures.next().await else { break };
     }
 
     let _: Option<Record> = db
-        .upsert(("li_did", did_key))
+        .upsert(("li_did", did_key.clone()))
         .content(LastIndexedTimestamp {
             time_us: update_timestamp.as_micros() as u64,
             time_dt: chrono::Utc::now().into(),
