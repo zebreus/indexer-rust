@@ -14,14 +14,13 @@ use opentelemetry_sdk::{
 };
 use opentelemetry_semantic_conventions::{
     attribute::{DEPLOYMENT_ENVIRONMENT_NAME, SERVICE_NAME, SERVICE_VERSION},
-    resource::{HOST_NAME, OS_BUILD_ID, OS_DESCRIPTION, OS_NAME, OS_VERSION, SERVICE_INSTANCE_ID},
+    resource::{HOST_NAME, OS_BUILD_ID, OS_DESCRIPTION, OS_NAME, OS_VERSION},
     SCHEMA_URL,
 };
 use std::{
     process::exit,
     sync::{Arc, LazyLock},
 };
-use surrealdb::Uuid;
 use tokio::signal::ctrl_c;
 use tracing_subscriber::{
     filter::FilterFn, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
@@ -30,12 +29,12 @@ use tracing_subscriber::{
 use crate::config::ARGS;
 
 const RESOURCE: LazyLock<Resource> = LazyLock::new(|| {
-    let instance_id = Uuid::new_v4();
+    // let instance_id = Uuid::new_v4();
 
     let mut attributes = vec![
         KeyValue::new(SERVICE_NAME, env!("CARGO_PKG_NAME")),
         KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
-        KeyValue::new(SERVICE_INSTANCE_ID, instance_id.to_string()),
+        // KeyValue::new(SERVICE_INSTANCE_ID, instance_id.to_string()),
         KeyValue::new(DEPLOYMENT_ENVIRONMENT_NAME, "develop"),
     ];
 
