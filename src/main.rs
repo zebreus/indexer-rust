@@ -68,7 +68,7 @@ async fn application_main() -> anyhow::Result<()> {
     let _otel_guard = init_observability().await;
 
     // connect to the database
-    let db = database::connect(&ARGS.db, &ARGS.username, &ARGS.password)
+    let db = database::connect(&ARGS.db.first().unwrap(), &ARGS.username, &ARGS.password)
         .await
         .context("Failed to connect to the database")?;
 

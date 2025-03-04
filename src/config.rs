@@ -15,8 +15,8 @@ pub struct Args {
     #[arg(long)]
     pub max_tasks: Option<usize>,
     /// Endpoint of the database server (including port and protocol)
-    #[arg(short = 'D', long, default_value = "rocksdb://path/to/surreal.db")]
-    pub db: String,
+    #[arg(short = 'D', long, num_args=1..=16)]
+    pub db: Vec<String>,
     /// Username for the database server
     #[arg(short, long, default_value = "root")]
     pub username: String,

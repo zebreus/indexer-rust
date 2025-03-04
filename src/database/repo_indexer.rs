@@ -1,6 +1,7 @@
-use std::{os::unix::process, sync::LazyLock};
+use std::{ops::Rem, os::unix::process, sync::LazyLock};
 
-use futures::StreamExt;
+use atrium_api::com::atproto::repo;
+use futures::{stream::FuturesUnordered, StreamExt};
 use index_repo::PipelineItem;
 use opentelemetry::{global, KeyValue};
 use pumps::Concurrency;
@@ -11,6 +12,8 @@ use surrealdb::{engine::any::Any, Surreal};
 use tracing::{error, warn};
 
 use crate::config::ARGS;
+
+use super::connect;
 
 // mod buffered_items;
 mod index_repo;
@@ -247,8 +250,21 @@ pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
     let download_concurrency_multiplier = ARGS.pipeline_download_concurrency_multiplier;
     let concurrent_elements = ARGS.pipeline_concurrent_elements;
 
+    let databases = ARGS
+        .db
+        .iter()
+        .map(|x| async { connect(x, &ARGS.username, &ARGS.password).await.unwrap() })
+        .collect::<FuturesUnordered<_>>()
+        .collect::<Vec<_>>()
+        .await;
     let repo_stream = RepoStream::new(OLDEST_USEFUL_ANCHOR.to_string(), db.clone());
-    let dids = repo_stream.map(move |x| (x.to_string(), db.clone(), http_client.clone()));
+    let dids = repo_stream.enumerate().map(move |(id, x)| {
+        (
+            x.to_string(),
+            databases.get(id.rem(databases.len())).unwrap().clone(),
+            http_client.clone(),
+        )
+    });
 
     // let urls_list = vec!["1"; 1000];
     // let urls = urls_list
