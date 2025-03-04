@@ -2,7 +2,7 @@ use crate::{
     config::ARGS,
     database::{
         definitions::Record,
-        handlers::{apply_big_update, on_commit_event_createorupdate, BigUpdate},
+        handlers::{on_commit_event_createorupdate, BigUpdate},
     },
 };
 use atrium_api::{
@@ -13,8 +13,14 @@ use atrium_api::{
 use reqwest::Client;
 use serde::Deserialize;
 use serde_ipld_dagcbor::from_reader;
-use std::{collections::HashMap, io::Read, string::FromUtf8Error, sync::LazyLock, time::Duration};
-use surrealdb::{engine::any::Any, opt::PatchOp, Surreal};
+use std::{
+    collections::HashMap,
+    io::Read,
+    string::FromUtf8Error,
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
+use surrealdb::{engine::any::Any, opt::PatchOp, RecordId, Surreal};
 use tokio::task::spawn_blocking;
 use tracing::{info, instrument, span, trace, warn, Level, Span};
 
@@ -133,6 +139,7 @@ async fn get_plc_service(
 ) -> anyhow::Result<Option<PlcDirectoryDidResponseService>> {
     let resp = http_client
         .get(format!("https://plc.directory/{}", did))
+        .timeout(Duration::from_secs(ARGS.directory_download_timeout))
         .send()
         .await?
         .json::<PlcDirectoryDidResponse>()
@@ -152,6 +159,7 @@ async fn download_repo(
             "{}/xrpc/com.atproto.sync.getRepo?did={}",
             service.service_endpoint, did,
         ))
+        .timeout(tokio::time::Duration::from_secs(ARGS.repo_download_timeout))
         .send()
         .await?;
     let bytes = get_repo_response.bytes().await?.to_vec();
@@ -180,78 +188,51 @@ fn deserialize_repo(mut bytes: Vec<u8>) -> anyhow::Result<HashMap<Cid, Vec<u8>>>
     files
 }
 
-/// Convert downloaded files into database updates
-#[instrument(skip_all)]
-async fn files_to_updates(files: HashMap<Cid, Vec<u8>>) -> anyhow::Result<Vec<DatabaseUpdate>> {
-    // TODO: Look into using block_in_place instead of spawn_blocking
-    let result = spawn_blocking(|| files_to_updates_blocking(files)).await??;
-    Ok(result)
-}
-
 /// Apply updates to the database
 #[instrument(skip_all)]
-async fn apply_updates(
-    db: &Surreal<Any>,
-    did: &str,
-    updates: Vec<DatabaseUpdate>,
-    update_timestamp: &Duration,
-) -> anyhow::Result<()> {
+fn create_big_update(did: &str, updates: Vec<DatabaseUpdate>) -> anyhow::Result<BigUpdate> {
     let did_key = crate::database::utils::did_to_key(did)?;
-    if !ARGS.dont_write_when_backfilling.unwrap_or(false) {
-        let did = did.to_owned();
-        let did_key = did_key.to_owned();
-        let big_update = tokio::task::spawn_blocking(move || {
-            let mut futures = updates.into_iter().map(|update| {
-                let did_key = did_key.clone();
-                let did = did.to_string();
+    let did = did.to_owned();
+    let did_key = did_key.to_owned();
 
-                let res = on_commit_event_createorupdate(
-                    Did::new(did.clone().into()).unwrap(),
-                    did_key,
-                    update.collection,
-                    update.rkey,
-                    update.record,
-                );
+    let mut db_updates = updates.into_iter().map(|update| {
+        let did_key = did_key.clone();
+        let did = did.to_string();
 
-                match res {
-                    Ok(big_update) => {
-                        return Ok(big_update);
-                    }
-                    Err(e) => {
-                        warn!("on_commit_event_createorupdate {} {}", e, did);
-                        return Err(e);
-                    }
-                }
-            });
-            let mut really_big_update = BigUpdate::default();
-            loop {
-                let Some(result) = futures.next() else {
-                    break;
-                };
-                match result {
-                    Ok(big_update) => {
-                        really_big_update.merge(big_update);
-                    }
-                    Err(e) => {
-                        warn!("Failed to apply update: {}", e);
-                        return Err(e);
-                    }
-                }
+        let res = on_commit_event_createorupdate(
+            Did::new(did.clone().into()).unwrap(),
+            did_key,
+            update.collection,
+            update.rkey,
+            update.record,
+        );
+
+        match res {
+            Ok(big_update) => {
+                return Ok(big_update);
             }
-            Ok(really_big_update)
-        })
-        .await??;
-        apply_big_update(db, big_update).await?;
+            Err(e) => {
+                warn!("on_commit_event_createorupdate {} {}", e, did);
+                return Err(e);
+            }
+        }
+    });
+    let mut really_big_update = BigUpdate::default();
+    loop {
+        let Some(result) = db_updates.next() else {
+            break;
+        };
+        match result {
+            Ok(big_update) => {
+                really_big_update.merge(big_update);
+            }
+            Err(e) => {
+                warn!("Failed to apply update: {}", e);
+                return Err(e);
+            }
+        }
     }
-    let _: Option<Record> = db
-        .update(("latest_backfill", did_key.clone()))
-        .patch(PatchOp::replace(
-            "at",
-            surrealdb::sql::Datetime::from(chrono::Utc::now()),
-        ))
-        .await?;
-
-    Ok(())
+    Ok(really_big_update)
 }
 
 // /// Indexes the repo with the given DID (Decentralized Identifier)
@@ -284,8 +265,6 @@ async fn apply_updates(
 /// No processing has been done on this item
 pub struct New {}
 
-/// It was verified that the item is not indexed yet
-pub struct NotIndexed {}
 /// Has a service
 pub struct WithService {
     service: PlcDirectoryDidResponseService,
@@ -298,14 +277,10 @@ pub struct WithRepo {
     repo: Vec<u8>,
 }
 
-pub struct WithFiles {
-    now: std::time::Duration,
-    files: HashMap<ipld_core::cid::Cid, Vec<u8>>,
-}
 /// Has converted the files to update
 pub struct WithUpdates {
     now: std::time::Duration,
-    pub updates: Vec<DatabaseUpdate>,
+    pub update: BigUpdate,
 }
 /// Updates have been applied
 pub struct Done {}
@@ -336,21 +311,6 @@ impl PipelineItem<New> {
 }
 
 impl PipelineItem<New> {
-    #[instrument(skip(self), parent = &self.span)]
-    pub async fn check_indexed(self) -> anyhow::Result<PipelineItem<NotIndexed>> {
-        // TODO: Obsolete, remove this
-
-        Ok(PipelineItem::<NotIndexed> {
-            state: NotIndexed {},
-            db: self.db,
-            http_client: self.http_client,
-            did: self.did,
-            span: self.span,
-        })
-    }
-}
-
-impl PipelineItem<NotIndexed> {
     #[instrument(skip(self), parent = &self.span)]
     pub async fn get_service(self) -> anyhow::Result<PipelineItem<WithService>> {
         let service = get_plc_service(&self.http_client, &self.did).await?;
@@ -392,30 +352,24 @@ impl PipelineItem<WithService> {
 
 impl PipelineItem<WithRepo> {
     #[instrument(skip(self), parent = &self.span)]
-    pub async fn deserialize_repo(self) -> anyhow::Result<PipelineItem<WithFiles>> {
+    pub async fn process_repo(self) -> anyhow::Result<PipelineItem<WithUpdates>> {
         // info!("Deserializing repo {}", self.did);
-        let files = spawn_blocking(|| deserialize_repo(self.state.repo)).await??;
-        Ok(PipelineItem::<WithFiles> {
-            state: WithFiles {
-                now: self.state.now,
-                files,
-            },
-            db: self.db,
-            http_client: self.http_client,
-            did: self.did,
-            span: self.span,
-        })
-    }
-}
+        let did = self.did.clone();
+        let big_update = spawn_blocking(move || {
+            let files: HashMap<ipld_core::cid::CidGeneric<64>, Vec<u8>> =
+                deserialize_repo(self.state.repo)?;
+            let updates = files_to_updates_blocking(files)?;
+            let mut big_update = create_big_update(&did, updates)?;
 
-impl PipelineItem<WithFiles> {
-    #[instrument(skip(self), parent = &self.span)]
-    pub async fn files_to_updates(self) -> anyhow::Result<PipelineItem<WithUpdates>> {
-        let updates = files_to_updates(self.state.files).await?;
+            big_update.add_timestamp(&did, surrealdb::sql::Datetime::from(chrono::Utc::now()));
+            Result::<BigUpdate, anyhow::Error>::Ok(big_update)
+        })
+        .await??;
+
         Ok(PipelineItem::<WithUpdates> {
             state: WithUpdates {
                 now: self.state.now,
-                updates,
+                update: big_update,
             },
             db: self.db,
             http_client: self.http_client,
@@ -428,7 +382,25 @@ impl PipelineItem<WithFiles> {
 impl PipelineItem<WithUpdates> {
     #[instrument(skip(self), parent = &self.span)]
     pub async fn apply_updates(self) -> anyhow::Result<PipelineItem<Done>> {
-        apply_updates(&self.db, &self.did, self.state.updates, &self.state.now).await?;
+        let start = Instant::now();
+
+        if !ARGS.dont_write_when_backfilling.unwrap_or(false) {
+            self.state.update.apply(&self.db).await?;
+        } else {
+            eprintln!("Skipping writing to the database and sleeping instead");
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        let duration = start.elapsed();
+        eprintln!("Big update took {:?}", duration);
+        warn!("Big update took {:?}", duration);
+        // let _: Option<Record> = &self
+        //     .db
+        //     .update(("latest_backfill", did_key.clone()))
+        //     .patch(PatchOp::replace(
+        //         "at",
+        //         surrealdb::sql::Datetime::from(chrono::Utc::now()),
+        //     ))
+        //     .await?;
         Ok(PipelineItem::<Done> {
             state: Done {},
             db: self.db,
@@ -441,8 +413,9 @@ impl PipelineItem<WithUpdates> {
 
 impl PipelineItem<Done> {
     #[instrument(skip(self), parent = &self.span)]
-    pub async fn print_report(self) -> () {
+    pub async fn print_report(self) -> anyhow::Result<()> {
         // TODO: This is only for printing debug stuff
         trace!("Indexed {}", self.did);
+        Ok(())
     }
 }

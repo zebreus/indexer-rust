@@ -10,7 +10,9 @@ use atrium_api::{
     },
 };
 use chrono::Utc;
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
+use serde_with::skip_serializing_none;
 use std::future::IntoFuture;
 use std::time::Instant;
 use surrealdb::method::Query;
@@ -50,7 +52,7 @@ pub async fn handle_event(db: &Surreal<Any>, event: Kind) -> Result<()> {
                 } => {
                     let big_update =
                         on_commit_event_createorupdate(did, did_key, collection, rkey, record)?;
-                    apply_big_update(db, big_update).await?;
+                    big_update.apply(db).await?;
                 }
                 Commit::Delete {
                     rev,
@@ -164,10 +166,12 @@ struct UpdateListItem {
     pub created_at: surrealdb::Datetime,
 }
 
+#[skip_serializing_none]
 #[derive(Serialize)]
 struct UpdateLatestBackfill {
-    pub of: surrealdb::RecordId,
-    pub id: String,
+    of: surrealdb::RecordId,
+    id: String,
+    at: Option<surrealdb::sql::Datetime>,
 }
 
 /// Database struct for a bluesky profile
@@ -273,6 +277,8 @@ pub struct BigUpdate {
     did: Vec<UpdateDid>,
     follows: Vec<UpdateFollow>,
     latest_backfills: Vec<UpdateLatestBackfill>,
+    /// Like latest_backfills but overwrites existing records
+    overwrite_latest_backfills: Vec<UpdateLatestBackfill>,
     likes: Vec<UpdateLike>,
     reposts: Vec<UpdateRepost>,
     blocks: Vec<UpdateBlock>,
@@ -314,65 +320,331 @@ impl BigUpdate {
         self.replies_relations.extend(other.replies_relations);
         self.reply_to_relations.extend(other.reply_to_relations);
         self.posts_relations.extend(other.posts_relations);
+        self.overwrite_latest_backfills
+            .extend(other.overwrite_latest_backfills);
+    }
+
+    pub fn add_timestamp(&mut self, did: &str, time: surrealdb::sql::Datetime) {
+        self.overwrite_latest_backfills.push(UpdateLatestBackfill {
+            of: RecordId::from(("did", did)),
+            id: did.to_string(),
+            at: Some(time),
+        });
+    }
+
+    pub async fn apply(self, db: &Surreal<Any>) -> Result<()> {
+        let format_output = tokio::task::block_in_place(|| format!("{:?}", &self));
+        //TODO: Bundle this into a function
+        let query_string = r#"
+            INSERT IGNORE INTO did $dids RETURN NONE;
+            INSERT IGNORE INTO latest_backfill $latest_backfills RETURN NONE;
+            INSERT IGNORE INTO feed $feeds RETURN NONE;
+            INSERT IGNORE INTO list $lists RETURN NONE;
+            INSERT IGNORE INTO lex_app_bsky_feed_threadgate $threadgates RETURN NONE;
+            INSERT IGNORE INTO lex_app_bsky_graph_starterpack $starterpacks RETURN NONE;
+            INSERT IGNORE INTO lex_app_bsky_feed_postgate $postgates RETURN NONE;
+            INSERT IGNORE INTO lex_chat_bsky_actor_declaration $actordeclarations RETURN NONE;
+            INSERT IGNORE INTO lex_app_bsky_labeler_service $labelerservices RETURN NONE;
+            INSERT IGNORE INTO posts $posts RETURN NONE;
+            INSERT RELATION INTO quotes $quotes RETURN NONE;
+            INSERT RELATION INTO like $likes RETURN NONE;
+            INSERT RELATION INTO repost $reposts RETURN NONE;
+            INSERT RELATION INTO block $blocks RETURN NONE;
+            INSERT RELATION INTO listblock $listblocks RETURN NONE;
+            INSERT RELATION INTO listitem $listitems RETURN NONE;
+            INSERT RELATION INTO replyto $reply_to_relations RETURN NONE;
+            INSERT RELATION INTO quotes $quotes RETURN NONE;
+            INSERT RELATION INTO replies $replies_relations RETURN NONE;
+            INSERT RELATION INTO follow $follows RETURN NONE;
+            INSERT INTO latest_backfill $overwrite_latest_backfill RETURN NONE;
+        "#;
+
+        let before_update = Instant::now();
+        let update = tokio::task::block_in_place(|| {
+            db.query(query_string)
+                .bind(("dids", self.did))
+                .bind(("follows", self.follows))
+                .bind(("latest_backfills", self.latest_backfills))
+                .bind(("likes", self.likes))
+                .bind(("reposts", self.reposts))
+                .bind(("blocks", self.blocks))
+                .bind(("listblocks", self.listblocks))
+                .bind(("listitems", self.listitems))
+                .bind(("feeds", self.feeds))
+                .bind(("lists", self.lists))
+                .bind(("threadgates", self.threadgates))
+                .bind(("starterpacks", self.starterpacks))
+                .bind(("postgates", self.postgates))
+                .bind(("actordeclarations", self.actordeclarations))
+                .bind(("labelerservices", self.labelerservices))
+                .bind(("quotes", self.quotes))
+                .bind(("posts", self.posts))
+                .bind(("replies_relations", self.replies_relations))
+                .bind(("reply_to_relations", self.reply_to_relations))
+                .bind(("posts_relations", self.posts_relations))
+                .bind(("overwrite_latest_backfill", self.overwrite_latest_backfills))
+                .into_future()
+                .instrument(span!(Level::INFO, "query"))
+        });
+        let duration = before_update.elapsed();
+        let after_update = Instant::now();
+        update.await?;
+        let update_duration = after_update.elapsed();
+        eprintln!(
+            "Update creation took {}ms, execution took {}ms; update: {}",
+            duration.as_millis(),
+            update_duration.as_millis(),
+            format_output
+        );
+
+        Ok(())
     }
 }
 
-pub async fn apply_big_update(db: &Surreal<Any>, big_update: BigUpdate) -> Result<()> {
-    //TODO: Bundle this into a function
-    let query_string = r#"
-        INSERT IGNORE INTO did $dids;
-        INSERT RELATION INTO follow $follows;
-        INSERT IGNORE INTO latest_backfill $latest_backfills;
-        INSERT RELATION INTO like $likes;
-        INSERT RELATION INTO repost $reposts;
-        INSERT RELATION INTO block $blocks;
-        INSERT RELATION INTO listblock $listblocks;
-        INSERT RELATION INTO listitem $listitems;
-        INSERT IGNORE INTO feed $feeds;
-        INSERT IGNORE INTO list $lists;
-        INSERT IGNORE INTO lex_app_bsky_feed_threadgate $threadgates;
-        INSERT IGNORE INTO lex_app_bsky_graph_starterpack $starterpacks;
-        INSERT IGNORE INTO lex_app_bsky_feed_postgate $postgates;
-        INSERT IGNORE INTO lex_chat_bsky_actor_declaration $actordeclarations;
-        INSERT IGNORE INTO lex_app_bsky_labeler_service $labelerservices;
-        INSERT RELATION INTO quote $quotes;
-        INSERT IGNORE INTO posts $posts;
-        INSERT RELATION INTO replyto $reply_to_relations;
-        INSERT RELATION INTO quotes $quotes;
-        INSERT RELATION INTO replies $replies_relations;
-    "#;
-
-    let start = Instant::now();
-    db.query(query_string)
-        .bind(("dids", big_update.did))
-        .bind(("follows", big_update.follows))
-        .bind(("latest_backfills", big_update.latest_backfills))
-        .bind(("likes", big_update.likes))
-        .bind(("reposts", big_update.reposts))
-        .bind(("blocks", big_update.blocks))
-        .bind(("listblocks", big_update.listblocks))
-        .bind(("listitems", big_update.listitems))
-        .bind(("feeds", big_update.feeds))
-        .bind(("lists", big_update.lists))
-        .bind(("threadgates", big_update.threadgates))
-        .bind(("starterpacks", big_update.starterpacks))
-        .bind(("postgates", big_update.postgates))
-        .bind(("actordeclarations", big_update.actordeclarations))
-        .bind(("labelerservices", big_update.labelerservices))
-        .bind(("quotes", big_update.quotes))
-        .bind(("posts", big_update.posts))
-        .bind(("replies_relations", big_update.replies_relations))
-        .bind(("reply_to_relations", big_update.reply_to_relations))
-        .bind(("posts_relations", big_update.posts_relations))
-        .into_future()
-        .instrument(span!(Level::INFO, "query"))
-        .await?;
-    let duration = start.elapsed();
-    warn!("Big update took {:?}", duration);
-
-    Ok(())
+impl core::fmt::Debug for BigUpdate {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let did_size = self
+            .did
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let follows_size = self
+            .follows
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let latest_backfills_size = self
+            .latest_backfills
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let likes_size = self
+            .likes
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let reposts_size = self
+            .reposts
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let blocks_size = self
+            .blocks
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let listblocks_size = self
+            .listblocks
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let listitems_size = self
+            .listitems
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let feeds_size = self
+            .feeds
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let lists_size = self
+            .lists
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let threadgates_size = self
+            .threadgates
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let starterpacks_size = self
+            .starterpacks
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let postgates_size = self
+            .postgates
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let actordeclarations_size = self
+            .actordeclarations
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let labelerservices_size = self
+            .labelerservices
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let quotes_size = self
+            .quotes
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let posts_size = self
+            .posts
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let replies_relations_size = self
+            .replies_relations
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let reply_to_relations_size = self
+            .reply_to_relations
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let posts_relations_size = self
+            .posts_relations
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let overwrite_latest_backfills_size = self
+            .overwrite_latest_backfills
+            .iter()
+            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
+            .sum::<usize>();
+        let number_relations = self.follows.len()
+            + self.likes.len()
+            + self.reposts.len()
+            + self.blocks.len()
+            + self.listblocks.len()
+            + self.listitems.len()
+            + self.replies_relations.len()
+            + self.reply_to_relations.len()
+            + self.posts_relations.len()
+            + self.quotes.len();
+        let number_inserts = self.did.len()
+            + self.latest_backfills.len()
+            + self.feeds.len()
+            + self.lists.len()
+            + self.threadgates.len()
+            + self.starterpacks.len()
+            + self.postgates.len()
+            + self.actordeclarations.len()
+            + self.labelerservices.len()
+            + self.posts.len()
+            + self.overwrite_latest_backfills.len();
+        let number_total = number_relations + number_inserts;
+        let size_relations = replies_relations_size
+            + reply_to_relations_size
+            + posts_relations_size
+            + quotes_size
+            + likes_size
+            + reposts_size
+            + blocks_size
+            + listblocks_size
+            + listitems_size;
+        let size_inserts = did_size
+            + latest_backfills_size
+            + feeds_size
+            + lists_size
+            + threadgates_size
+            + starterpacks_size
+            + postgates_size
+            + actordeclarations_size
+            + labelerservices_size
+            + posts_size
+            + overwrite_latest_backfills_size;
+        let size_total = size_relations + size_inserts;
+        f.debug_struct("BigUpdate")
+            .field("updates", &number_total)
+            .field("updates_size_mb", &(size_total as f64 / 1024.0 / 1024.0))
+            .field("number_relations", &number_relations)
+            .field("number_inserts", &number_inserts)
+            .field(
+                "size_relations_mb",
+                &(size_relations as f64 / 1024.0 / 1024.0),
+            )
+            .field("size_inserts_mb", &(size_inserts as f64 / 1024.0 / 1024.0))
+            .field("did", &self.did.len())
+            .field("did_size_mb", &(did_size as f64 / 1024.0 / 1024.0))
+            .field("follows", &self.follows.len())
+            .field("follows_size_mb", &(follows_size as f64 / 1024.0 / 1024.0))
+            .field("latest_backfills", &self.latest_backfills.len())
+            .field(
+                "latest_backfills_size_mb",
+                &(latest_backfills_size as f64 / 1024.0 / 1024.0),
+            )
+            .field("likes", &self.likes.len())
+            .field("likes_size_mb", &(likes_size as f64 / 1024.0 / 1024.0))
+            .field("reposts", &self.reposts.len())
+            .field("reposts_size_mb", &(reposts_size as f64 / 1024.0 / 1024.0))
+            .field("blocks", &self.blocks.len())
+            .field("blocks_size_mb", &(blocks_size as f64 / 1024.0 / 1024.0))
+            .field("listblocks", &self.listblocks.len())
+            .field(
+                "listblocks_size_mb",
+                &(listblocks_size as f64 / 1024.0 / 1024.0),
+            )
+            .field("listitems", &self.listitems.len())
+            .field(
+                "listitems_size_mb",
+                &(listitems_size as f64 / 1024.0 / 1024.0),
+            )
+            .field("feeds", &self.feeds.len())
+            .field("feeds_size_mb", &(feeds_size as f64 / 1024.0 / 1024.0))
+            .field("lists", &self.lists.len())
+            .field("lists_size_mb", &(lists_size as f64 / 1024.0 / 1024.0))
+            .field("threadgates", &self.threadgates.len())
+            .field(
+                "threadgates_size_mb",
+                &(threadgates_size as f64 / 1024.0 / 1024.0),
+            )
+            .field("starterpacks", &self.starterpacks.len())
+            .field(
+                "starterpacks_size_mb",
+                &(starterpacks_size as f64 / 1024.0 / 1024.0),
+            )
+            .field("postgates", &self.postgates.len())
+            .field(
+                "postgates_size_mb",
+                &(postgates_size as f64 / 1024.0 / 1024.0),
+            )
+            .field("actordeclarations", &self.actordeclarations.len())
+            .field(
+                "actordeclarations_size_mb",
+                &(actordeclarations_size as f64 / 1024.0 / 1024.0),
+            )
+            .field("labelerservices", &self.labelerservices.len())
+            .field(
+                "labelerservices_size_mb",
+                &(labelerservices_size as f64 / 1024.0 / 1024.0),
+            )
+            .field("quotes", &self.quotes.len())
+            .field("quotes_size_mb", &(quotes_size as f64 / 1024.0 / 1024.0))
+            .field("posts", &self.posts.len())
+            .field("posts_size_mb", &(posts_size as f64 / 1024.0 / 1024.0))
+            .field("replies_relations", &self.replies_relations.len())
+            .field(
+                "replies_relations_size_mb",
+                &(replies_relations_size as f64 / 1024.0 / 1024.0),
+            )
+            .field("reply_to_relations", &self.reply_to_relations.len())
+            .field(
+                "reply_to_relations_size_mb",
+                &(reply_to_relations_size as f64 / 1024.0 / 1024.0),
+            )
+            .field("posts_relations", &self.posts_relations.len())
+            .field(
+                "posts_relations_size_mb",
+                &(posts_relations_size as f64 / 1024.0 / 1024.0),
+            )
+            .field(
+                "overwrite_latest_backfills",
+                &self.overwrite_latest_backfills.len(),
+            )
+            .field(
+                "overwrite_latest_backfills_size_mb",
+                &(overwrite_latest_backfills_size as f64 / 1024.0 / 1024.0),
+            )
+            .finish()
+    }
 }
-
 /// If the new commit is a create or update, handle it
 #[instrument(skip(record))]
 pub fn on_commit_event_createorupdate(
@@ -448,6 +720,7 @@ pub fn on_commit_event_createorupdate(
             big_update.latest_backfills.push(UpdateLatestBackfill {
                 of: RecordId::from(("did", to.clone())),
                 id: to,
+                at: None,
             });
 
             // let _ = db

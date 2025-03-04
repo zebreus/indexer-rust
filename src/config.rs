@@ -35,24 +35,41 @@ pub struct Args {
     /// Capacity of the surrealdb connection. 0 means unbounded
     #[arg(long, default_value = "0")]
     pub surrealdb_capacity: usize,
-    /// Size of the buffer between each pipeline stage in elements
-    #[arg(long, default_value = "10")]
-    pub pipeline_buffer_size: usize,
-    /// Multiply the size of the download buffer by this factor
-    #[arg(long, default_value = "5")]
-    pub download_buffer_multiplier: usize,
     /// Enable tokio console support
     #[arg(long, default_value = "false", default_missing_value = "true", num_args=0..=1)]
     pub console: Option<bool>,
     /// Enable opentelemetry tracing support
     #[arg(long, default_value = "true", default_missing_value = "true", num_args=0..=1)]
     pub otel_tracing: Option<bool>,
+    /// Enable opentelemetry metrics support
+    #[arg(long, default_value = "true", default_missing_value = "true", num_args=0..=1)]
+    pub otel_metrics: Option<bool>,
     /// Enable opentelemetry
     #[arg(long, default_value = "true", default_missing_value = "true", num_args=0..=1)]
-    pub otel: Option<bool>,
+    pub otel_logs: Option<bool>,
     /// Dont write to the database when backfilling
     #[arg(long, default_value = "false", default_missing_value = "true", num_args=0..=1)]
     pub dont_write_when_backfilling: Option<bool>,
+    /// Size of the buffer between each pipeline stage in elements
+    #[arg(long, default_value = "200")]
+    pub pipeline_buffer_size: usize,
+    /// Number of concurrent elements in each pipeline stage
+    #[arg(long, default_value = "50")]
+    pub pipeline_concurrent_elements: usize,
+    /// Multiply the number of concurrent download repo tasks by this factor
+    #[arg(long, default_value = "4")]
+    pub pipeline_download_concurrency_multiplier: usize,
+    /// Timeout for a pipeline stage in seconds. No pipeline stage should take longer than this
+    #[arg(long, default_value = "350")]
+    pub pipeline_stage_timeout: u64,
+    /// Timeout for the repo downloading pipeline stage in seconds.
+    /// If this is longer than the pipeline_stage_timeout, the pipeline_stage_timeout will be used
+    #[arg(long, default_value = "300")]
+    pub repo_download_timeout: u64,
+    /// Timeout for downloading information from the directory in seconds.
+    /// If this is longer than the pipeline_stage_timeout, the pipeline_stage_timeout will be used
+    #[arg(long, default_value = "60")]
+    pub directory_download_timeout: u64,
 }
 
 pub const ARGS: LazyLock<Args> = LazyLock::new(|| Args::parse());

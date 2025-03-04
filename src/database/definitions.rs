@@ -232,12 +232,11 @@ DEFINE FIELD avatar ON TABLE list TYPE option<record<blob>>;
 DEFINE FIELD labels ON TABLE list TYPE option<array<string>>;
 DEFINE FIELD extraData ON TABLE list TYPE option<string>;
 
+DEFINE TABLE block SCHEMAFULL TYPE RELATION FROM did TO did;
+DEFINE FIELD createdAt ON TABLE block TYPE datetime;
 
 DEFINE TABLE follow SCHEMAFULL TYPE RELATION FROM did TO did;
 DEFINE FIELD createdAt ON TABLE follow TYPE datetime;
-
-DEFINE TABLE block SCHEMAFULL TYPE RELATION FROM did TO did;
-DEFINE FIELD createdAt ON TABLE block TYPE datetime;
 
 DEFINE TABLE like SCHEMAFULL TYPE RELATION FROM did TO post|feed|list|starterpack|labeler;
 DEFINE FIELD createdAt ON TABLE like TYPE datetime;
@@ -255,53 +254,53 @@ DEFINE TABLE replyto SCHEMAFULL TYPE RELATION FROM post TO post;
 DEFINE TABLE repost SCHEMAFULL TYPE RELATION FROM did TO post;
 DEFINE FIELD createdAt ON TABLE repost TYPE datetime;
 
-DEFINE TABLE like_count_view TYPE NORMAL AS
-SELECT
-  count() AS c,
-  ->out.id AS out
-  FROM like
-  GROUP BY out
-;
+// DEFINE TABLE like_count_view TYPE NORMAL AS
+// SELECT
+//   count() AS c,
+//   ->out.id AS out
+//   FROM like
+//   GROUP BY out
+// ;
 
-DEFINE TABLE repost_count_view TYPE NORMAL AS
-SELECT
-  count() AS c,
-  ->out.id AS out
-  FROM repost
-  GROUP BY out
-;
+// DEFINE TABLE repost_count_view TYPE NORMAL AS
+// SELECT
+//   count() AS c,
+//   ->out.id AS out
+//   FROM repost
+//   GROUP BY out
+// ;
 
-DEFINE TABLE reply_count_view TYPE NORMAL AS
-SELECT
-  count() AS c,
-  ->out.id AS out
-  FROM replyto
-  GROUP BY out
-;
+// DEFINE TABLE reply_count_view TYPE NORMAL AS
+// SELECT
+//   count() AS c,
+//   ->out.id AS out
+//   FROM replyto
+//   GROUP BY out
+// ;
 
-DEFINE TABLE quote_count_view TYPE NORMAL AS
-SELECT
-  count() AS c,
-  ->out.id AS out
-  FROM quotes
-  GROUP BY out
-;
+// DEFINE TABLE quote_count_view TYPE NORMAL AS
+// SELECT
+//   count() AS c,
+//   ->out.id AS out
+//   FROM quotes
+//   GROUP BY out
+// ;
 
-DEFINE TABLE following_count_view TYPE NORMAL AS
-SELECT
-  count() AS c,
-  ->in.id AS in
-  FROM follow
-  GROUP BY in
-;
+// DEFINE TABLE following_count_view TYPE NORMAL AS
+// SELECT
+//   count() AS c,
+//   ->in.id AS in
+//   FROM follow
+//   GROUP BY in
+// ;
 
-DEFINE TABLE follower_count_view TYPE NORMAL AS
-SELECT
-  count() AS c,
-  ->out.id AS out
-  FROM follow
-  GROUP BY out
-;
+// DEFINE TABLE follower_count_view TYPE NORMAL AS
+// SELECT
+//   count() AS c,
+//   ->out.id AS out
+//   FROM follow
+//   GROUP BY out
+// ;
 
 DEFINE TABLE latest_backfill SCHEMAFULL;
 DEFINE FIELD of ON TABLE latest_backfill TYPE record<did>;

@@ -38,7 +38,8 @@ fn main() {
         .enable_time()
         .enable_io()
         .max_io_events_per_tick(1024 * 512)
-        .global_queue_interval(20)
+        .global_queue_interval(40)
+        .event_interval(20)
         .thread_name_fn(|| {
             static ATOMIC: AtomicUsize = AtomicUsize::new(0);
             let id = ATOMIC.fetch_add(1, Ordering::Relaxed);

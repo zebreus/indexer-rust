@@ -89,22 +89,22 @@ pub async fn init_observability() -> Arc<OtelGuard> {
     let meter_provider = init_meter();
     let logger_provider = init_logger();
 
-    // Exports tokio stats for tokio-console
-    let tokio_console_enabled = ARGS.console.unwrap_or(false);
-    let tokio_console_filter = FilterFn::new(move |_| tokio_console_enabled);
-    let tokio_console_layer = console_subscriber::spawn().with_filter(tokio_console_filter);
+    // // Exports tokio stats for tokio-console
+    // let tokio_console_enabled = ARGS.console.unwrap_or(false);
+    // let tokio_console_filter = FilterFn::new(move |_| tokio_console_enabled);
+    // let tokio_console_layer = console_subscriber::spawn().with_filter(tokio_console_filter);
 
-    // Prints logs to stdout
-    let stdout_filter = EnvFilter::new("info").add_directive("opentelemetry=info".parse().unwrap());
-    let stdout_layer = tracing_subscriber::fmt::layer()
-        .with_thread_names(true)
-        .with_filter(stdout_filter);
+    // // Prints logs to stdout
+    // let stdout_filter = EnvFilter::new("info").add_directive("opentelemetry=info".parse().unwrap());
+    // let stdout_layer = tracing_subscriber::fmt::layer()
+    //     .with_thread_names(true)
+    //     .with_filter(stdout_filter);
 
     // Add all layers
-    let registry = tracing_subscriber::registry()
-        .with(stdout_layer)
-        .with(tokio_console_layer);
-    if ARGS.otel.unwrap_or(true) {
+    let registry = tracing_subscriber::registry();
+    // .with(stdout_layer)
+    // .with(tokio_console_layer);
+    if ARGS.otel_logs.unwrap_or(true) {
         // Exports logs to otel
         let otel_log_filter = EnvFilter::new("info")
             .add_directive("hyper=off".parse().unwrap())
@@ -121,6 +121,7 @@ pub async fn init_observability() -> Arc<OtelGuard> {
                 .with(tracing_opentelemetry::MetricsLayer::new(
                     meter_provider.clone(),
                 ));
+
         if ARGS.otel_tracing.unwrap_or(true) {
             // Exports tracing traces to opentelemetry
             let tracing_filter = EnvFilter::new("info")
@@ -137,7 +138,21 @@ pub async fn init_observability() -> Arc<OtelGuard> {
             registry_with_otel.init();
         };
     } else {
-        registry.init();
+        if ARGS.otel_tracing.unwrap_or(true) {
+            // Exports tracing traces to opentelemetry
+            let tracing_filter = EnvFilter::new("info")
+                .add_directive("hyper=off".parse().unwrap())
+                .add_directive("h2=off".parse().unwrap())
+                .add_directive("opentelemetry=off".parse().unwrap())
+                .add_directive("tonic=off".parse().unwrap())
+                .add_directive("reqwest=off".parse().unwrap());
+            let tracer = tracer_provider.tracer("tracing-otel-subscriber");
+            let tracing_layer =
+                tracing_opentelemetry::OpenTelemetryLayer::new(tracer).with_filter(tracing_filter);
+            registry.with(tracing_layer).init();
+        } else {
+            registry.init();
+        };
     };
 
     // TODO: Replace this hacky mess with something less broken
@@ -147,64 +162,68 @@ pub async fn init_observability() -> Arc<OtelGuard> {
         logger_provider,
     });
     let handler_otel_guard = guard.clone();
-    tokio::spawn(async move {
-        ctrl_c().await.unwrap();
-        eprintln!("Preparing for unclean exit");
+    tokio::task::Builder::new()
+        .name("Observability shutdown hook")
+        .spawn(async move {
+            ctrl_c().await.unwrap();
+            eprintln!("Preparing for unclean exit");
 
-        handler_otel_guard.logger_provider.shutdown().unwrap();
-        handler_otel_guard.meter_provider.shutdown().unwrap();
-        handler_otel_guard.tracer_provider.shutdown().unwrap();
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            handler_otel_guard.logger_provider.shutdown().unwrap();
+            handler_otel_guard.meter_provider.shutdown().unwrap();
+            handler_otel_guard.tracer_provider.shutdown().unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-        eprintln!("Exiting");
-        exit(1);
-    });
+            eprintln!("Exiting");
+            exit(1);
+        })
+        .unwrap();
     guard
 }
 
 fn init_logger() -> SdkLoggerProvider {
-    let otlp_log_exporter = LogExporter::builder().with_tonic().build().unwrap();
-    let logger_provider = SdkLoggerProvider::builder()
-        .with_resource(RESOURCE.clone())
-        .with_batch_exporter(otlp_log_exporter)
-        .build();
-    logger_provider
+    let mut logger_provider = SdkLoggerProvider::builder().with_resource(RESOURCE.clone());
+    if ARGS.otel_logs.unwrap_or(true) {
+        let otlp_log_exporter = LogExporter::builder().with_tonic().build().unwrap();
+        logger_provider = logger_provider.with_batch_exporter(otlp_log_exporter);
+    };
+    logger_provider.build()
 }
 
 fn init_meter() -> SdkMeterProvider {
-    let otlp_metric_exporter = MetricExporter::builder()
-        .with_tonic()
-        .with_temporality(opentelemetry_sdk::metrics::Temporality::Cumulative)
-        .build()
-        .unwrap();
+    let mut meter_provider_builder = SdkMeterProvider::builder().with_resource(RESOURCE.clone());
+    if ARGS.otel_metrics.unwrap_or(true) {
+        let otlp_metric_exporter = MetricExporter::builder()
+            .with_tonic()
+            .with_temporality(opentelemetry_sdk::metrics::Temporality::Cumulative)
+            .build()
+            .unwrap();
 
-    let periodic_reader = PeriodicReader::builder(otlp_metric_exporter)
-        .with_interval(std::time::Duration::from_secs(5))
-        .build();
+        let periodic_reader = PeriodicReader::builder(otlp_metric_exporter)
+            .with_interval(std::time::Duration::from_secs(5))
+            .build();
 
-    let meter_provider = SdkMeterProvider::builder()
-        .with_resource(RESOURCE.clone())
-        .with_reader(periodic_reader)
-        .build();
+        meter_provider_builder = meter_provider_builder.with_reader(periodic_reader);
+    }
+    let meter_provider = meter_provider_builder.build();
     global::set_meter_provider(meter_provider.clone());
-
     meter_provider
 }
 
 fn init_tracer() -> SdkTracerProvider {
     global::set_text_map_propagator(TraceContextPropagator::new());
+    let mut tracer_provider_builder = SdkTracerProvider::builder().with_resource(RESOURCE.clone());
+    if ARGS.otel_tracing.unwrap_or(true) {
+        let otlp_span_exporter = SpanExporter::builder().with_tonic().build().unwrap();
 
-    let otlp_span_exporter = SpanExporter::builder().with_tonic().build().unwrap();
+        tracer_provider_builder = tracer_provider_builder
+            .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
+                1.0,
+            ))))
+            .with_id_generator(RandomIdGenerator::default())
+            .with_batch_exporter(otlp_span_exporter);
+    }
 
-    let tracer_provider = SdkTracerProvider::builder()
-        .with_resource(RESOURCE.clone())
-        .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
-            1.0,
-        ))))
-        .with_id_generator(RandomIdGenerator::default())
-        .with_batch_exporter(otlp_span_exporter)
-        // .with_simple_exporter(otlp_span_exporter)
-        .build();
+    let tracer_provider = tracer_provider_builder.build();
     global::set_tracer_provider(tracer_provider.clone());
 
     tracer_provider
