@@ -1,20 +1,24 @@
-use super::LastIndexedTimestamp;
-use crate::database::{definitions::Record, handlers::on_commit_event_createorupdate};
+use crate::{
+    config::ARGS,
+    database::{
+        definitions::Record,
+        handlers::{apply_big_update, on_commit_event_createorupdate, BigUpdate},
+    },
+};
 use atrium_api::{
     record::KnownRecord,
     types::string::{Did, RecordKey},
 };
-use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
-use hyper::body::Bytes;
-use ipld_core::cid::{Cid, CidGeneric};
-use iroh_car::CarReader;
+// use ipld_core::cid::{Cid, CidGeneric};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_ipld_dagcbor::from_reader;
-use std::{collections::HashMap, string::FromUtf8Error, sync::LazyLock, time::Duration};
-use surrealdb::{engine::any::Any, Surreal};
+use std::{collections::HashMap, io::Read, string::FromUtf8Error, sync::LazyLock, time::Duration};
+use surrealdb::{engine::any::Any, opt::PatchOp, Surreal};
 use tokio::task::spawn_blocking;
 use tracing::{info, instrument, span, trace, warn, Level, Span};
+
+type Cid = ipld_core::cid::Cid;
 
 /// There should only be one request client to make use of connection pooling
 // TODO: Dont use a global client
@@ -75,9 +79,9 @@ pub struct DatabaseUpdate {
 }
 
 /// Insert a file into a map
-async fn insert_into_map(
+fn insert_into_map(
     mut files: HashMap<ipld_core::cid::Cid, Vec<u8>>,
-    file: (CidGeneric<64>, Vec<u8>),
+    file: (Cid, Vec<u8>),
 ) -> anyhow::Result<HashMap<ipld_core::cid::Cid, Vec<u8>>> {
     let (cid, data) = file;
     files.insert(cid, data);
@@ -121,17 +125,6 @@ fn files_to_updates_blocking(
     return Ok(result);
 }
 
-/// Check if a repo is already indexed
-#[instrument()]
-async fn check_indexed(db: &Surreal<Any>, did: &str) -> anyhow::Result<bool> {
-    let did_key = crate::database::utils::did_to_key(did)?;
-
-    Ok(db
-        .select::<Option<LastIndexedTimestamp>>(("li_did", &did_key))
-        .await?
-        .is_some())
-}
-
 /// Get the plc response service for the repo
 #[instrument(skip_all)]
 async fn get_plc_service(
@@ -153,7 +146,7 @@ async fn get_plc_service(
 async fn download_repo(
     service: &PlcDirectoryDidResponseService,
     did: &str,
-) -> anyhow::Result<Bytes> {
+) -> anyhow::Result<Vec<u8>> {
     let get_repo_response = REQWEST_CLIENT
         .get(format!(
             "{}/xrpc/com.atproto.sync.getRepo?did={}",
@@ -161,7 +154,7 @@ async fn download_repo(
         ))
         .send()
         .await?;
-    let bytes = get_repo_response.bytes().await?;
+    let bytes = get_repo_response.bytes().await?.to_vec();
     info!(
         "Downloaded repo {} with size {:.2} MB",
         did,
@@ -172,14 +165,17 @@ async fn download_repo(
 
 /// Download the file for the given repo into a map
 #[instrument(skip_all)]
-async fn deserialize_repo(bytes: Bytes) -> anyhow::Result<HashMap<Cid, Vec<u8>>> {
-    // TODO: Benchmark CarReader. This is probably not the right place for parsing logic
-    let car_reader = CarReader::new(bytes.as_ref()).await?;
-    let files = car_reader
-        .stream()
-        .map_err(|e| e.into())
-        .try_fold(HashMap::new(), insert_into_map)
-        .await;
+fn deserialize_repo(mut bytes: Vec<u8>) -> anyhow::Result<HashMap<Cid, Vec<u8>>> {
+    let (entries, header) = rs_car_sync::car_read_all(&mut bytes.as_slice(), true)?;
+    // let car_reader = CarReader::new(bytes.as_ref()).await?;
+    let files = entries
+        .into_iter()
+        .map(|(cid, data)| {
+            let cid_bytes = cid.to_bytes();
+            let cid: Cid = ipld_core::cid::Cid::read_bytes(cid_bytes.as_slice()).unwrap();
+            (cid, data)
+        })
+        .try_fold(HashMap::new(), insert_into_map);
 
     files
 }
@@ -201,41 +197,60 @@ async fn apply_updates(
     update_timestamp: &Duration,
 ) -> anyhow::Result<()> {
     let did_key = crate::database::utils::did_to_key(did)?;
+    if !ARGS.dont_write_when_backfilling.unwrap_or(false) {
+        let did = did.to_owned();
+        let did_key = did_key.to_owned();
+        let big_update = tokio::task::spawn_blocking(move || {
+            let mut futures = updates.into_iter().map(|update| {
+                let did_key = did_key.clone();
+                let did = did.to_string();
 
-    let mut futures: FuturesUnordered<_> = updates
-        .into_iter()
-        .map(|update| async {
-            let db = db.clone();
-            let did_key = did_key.clone();
-            let did = did.to_string();
+                let res = on_commit_event_createorupdate(
+                    Did::new(did.clone().into()).unwrap(),
+                    did_key,
+                    update.collection,
+                    update.rkey,
+                    update.record,
+                );
 
-            let res = on_commit_event_createorupdate(
-                &db,
-                Did::new(did.clone().into()).unwrap(),
-                did_key,
-                update.collection,
-                update.rkey,
-                update.record,
-            )
-            .await;
-
-            if let Err(error) = res {
-                warn!("on_commit_event_createorupdate {} {}", error, did);
+                match res {
+                    Ok(big_update) => {
+                        return Ok(big_update);
+                    }
+                    Err(e) => {
+                        warn!("on_commit_event_createorupdate {} {}", e, did);
+                        return Err(e);
+                    }
+                }
+            });
+            let mut really_big_update = BigUpdate::default();
+            loop {
+                let Some(result) = futures.next() else {
+                    break;
+                };
+                match result {
+                    Ok(big_update) => {
+                        really_big_update.merge(big_update);
+                    }
+                    Err(e) => {
+                        warn!("Failed to apply update: {}", e);
+                        return Err(e);
+                    }
+                }
             }
+            Ok(really_big_update)
         })
-        .collect();
-    loop {
-        let Some(_) = futures.next().await else { break };
+        .await??;
+        apply_big_update(db, big_update).await?;
     }
-
     let _: Option<Record> = db
-        .upsert(("li_did", did_key.clone()))
-        .content(LastIndexedTimestamp {
-            time_us: update_timestamp.as_micros() as u64,
-            time_dt: chrono::Utc::now().into(),
-            error: None,
-        })
+        .update(("latest_backfill", did_key.clone()))
+        .patch(PatchOp::replace(
+            "at",
+            surrealdb::sql::Datetime::from(chrono::Utc::now()),
+        ))
         .await?;
+
     Ok(())
 }
 
@@ -280,7 +295,7 @@ pub struct WithService {
 /// Has files
 pub struct WithRepo {
     now: std::time::Duration,
-    repo: Bytes,
+    repo: Vec<u8>,
 }
 
 pub struct WithFiles {
@@ -323,10 +338,8 @@ impl PipelineItem<New> {
 impl PipelineItem<New> {
     #[instrument(skip(self), parent = &self.span)]
     pub async fn check_indexed(self) -> anyhow::Result<PipelineItem<NotIndexed>> {
-        if check_indexed(&self.db, &self.did).await? {
-            // TODO: Handle this better, as this is not really an error
-            return Err(anyhow::anyhow!("Already indexed"));
-        }
+        // TODO: Obsolete, remove this
+
         Ok(PipelineItem::<NotIndexed> {
             state: NotIndexed {},
             db: self.db,
@@ -380,8 +393,8 @@ impl PipelineItem<WithService> {
 impl PipelineItem<WithRepo> {
     #[instrument(skip(self), parent = &self.span)]
     pub async fn deserialize_repo(self) -> anyhow::Result<PipelineItem<WithFiles>> {
-        info!("Deserializing repo {}", self.did);
-        let files = deserialize_repo(self.state.repo).await?;
+        // info!("Deserializing repo {}", self.did);
+        let files = spawn_blocking(|| deserialize_repo(self.state.repo)).await??;
         Ok(PipelineItem::<WithFiles> {
             state: WithFiles {
                 now: self.state.now,

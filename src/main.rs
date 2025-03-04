@@ -33,10 +33,12 @@ fn main() {
     let mut rt_builder = Builder::new_multi_thread();
     rt_builder
         .enable_all()
+        .worker_threads(32)
         .max_blocking_threads(512 * 512)
         .enable_time()
         .enable_io()
         .max_io_events_per_tick(1024 * 512)
+        .global_queue_interval(20)
         .thread_name_fn(|| {
             static ATOMIC: AtomicUsize = AtomicUsize::new(0);
             let id = ATOMIC.fetch_add(1, Ordering::Relaxed);

@@ -302,6 +302,10 @@ SELECT
   FROM follow
   GROUP BY out
 ;
+
+DEFINE TABLE latest_backfill SCHEMAFULL;
+DEFINE FIELD of ON TABLE latest_backfill TYPE record<did>;
+DEFINE FIELD at ON TABLE latest_backfill TYPE option<datetime>;
         ", // record<one | two>
     )
     .await?;

@@ -5,10 +5,11 @@ use std::{
 };
 
 use futures::Stream;
+use serde::Deserialize;
 use surrealdb::{engine::any::Any, Surreal};
 use tracing::info;
 
-use crate::database::{repo_indexer::BskyFollowRes, utils::unsafe_user_key_to_did};
+use crate::database::utils::unsafe_user_key_to_did;
 
 pub struct RepoStream {
     buffer: VecDeque<String>,
@@ -20,6 +21,12 @@ pub struct RepoStream {
             Box<dyn Future<Output = Result<surrealdb::Response, surrealdb::Error>> + Send>,
         >,
     >,
+}
+
+#[derive(Deserialize)]
+struct LatestBackfill {
+    pub at: Option<surrealdb::sql::Datetime>,
+    pub of: surrealdb::RecordId,
 }
 
 impl RepoStream {
@@ -63,16 +70,15 @@ impl Stream for RepoStream {
             if let Some(next) = self.buffer.pop_front() {
                 return Poll::Ready(Some(next));
             }
+            eprintln!("RepoStream not ready, fetching more data");
 
             info!(target: "indexer", "Discovering follows starting from {}", self.anchor);
             if self.db_future.is_none() {
                 self.db_future = Some(
                     self.db
                         // TODO: Fix the possible SQL injection
-                        .query(format!(
-                            "SELECT id,in,out FROM follow:{}.. LIMIT {};",
-                            self.anchor, FETCH_AMOUNT
-                        ))
+                        .query(r#"SELECT of FROM latest_backfill WHERE at IS NONE LIMIT $limit;"#)
+                        .bind(("limit", FETCH_AMOUNT))
                         .into_owned()
                         .into_future(),
                 );
@@ -86,24 +92,31 @@ impl Stream for RepoStream {
 
             let mut result = result.unwrap();
 
-            let follows: Vec<BskyFollowRes> = result.take(0).unwrap();
+            let follows: Vec<LatestBackfill> = result.take(0).unwrap();
 
-            let Some(anchor_key) = follows.last().map(|follow| follow.id.key()) else {
-                // TODO: Sleep again
-                return Poll::Pending;
-            };
-            self.anchor = format!("{}", anchor_key);
+            // let Some(anchor_key) = follows.last().map(|follow| follow.id.key()) else {
+            //     // TODO: Sleep again
+            //     return Poll::Pending;
+            // };
+            // self.anchor = format!("{}", anchor_key);
 
-            for follow in &follows {
-                for record_id in [&follow.from, &follow.to] {
-                    let did = unsafe_user_key_to_did(&format!("{}", record_id.key()));
-                    if self.processed_dids.contains(&did) {
-                        continue;
-                    }
-                    self.processed_dids.insert(did.clone());
-                    self.buffer.push_back(did);
+            let starttime = std::time::Instant::now();
+            for latest_backfill in &follows {
+                let key = latest_backfill.of.key().to_string();
+                if self.processed_dids.contains(&key) {
+                    continue;
                 }
+                self.processed_dids.insert(key);
+                // TODO: Investigate if we can just use the RecordId directly
+                let did = unsafe_user_key_to_did(&format!("{}", latest_backfill.of.key()));
+                self.buffer.push_back(did);
             }
+            let duration = starttime.elapsed();
+            eprintln!(
+                "RepoStream processed {} records in {}ms",
+                follows.len(),
+                duration.as_millis()
+            );
 
             if let Some(next) = self.buffer.pop_front() {
                 return Poll::Ready(Some(next));

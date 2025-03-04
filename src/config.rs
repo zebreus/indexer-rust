@@ -38,6 +38,9 @@ pub struct Args {
     /// Size of the buffer between each pipeline stage in elements
     #[arg(long, default_value = "10")]
     pub pipeline_buffer_size: usize,
+    /// Multiply the size of the download buffer by this factor
+    #[arg(long, default_value = "5")]
+    pub download_buffer_multiplier: usize,
     /// Enable tokio console support
     #[arg(long, default_value = "false", default_missing_value = "true", num_args=0..=1)]
     pub console: Option<bool>,
@@ -47,6 +50,9 @@ pub struct Args {
     /// Enable opentelemetry
     #[arg(long, default_value = "true", default_missing_value = "true", num_args=0..=1)]
     pub otel: Option<bool>,
+    /// Dont write to the database when backfilling
+    #[arg(long, default_value = "false", default_missing_value = "true", num_args=0..=1)]
+    pub dont_write_when_backfilling: Option<bool>,
 }
 
 pub const ARGS: LazyLock<Args> = LazyLock::new(|| Args::parse());

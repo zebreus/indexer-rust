@@ -12,15 +12,6 @@ use crate::config::ARGS;
 mod index_repo;
 mod repo_stream;
 
-#[derive(Deserialize)]
-struct BskyFollowRes {
-    #[serde(rename = "in")]
-    pub from: surrealdb::RecordId,
-    #[serde(rename = "out")]
-    pub to: surrealdb::RecordId,
-    pub id: surrealdb::RecordId,
-}
-
 /// Database struct for a repo indexing timestamp
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LastIndexedTimestamp {
@@ -34,7 +25,7 @@ const OLDEST_USEFUL_ANCHOR: &str = "3juj4";
 
 // Make this less hacky
 macro_rules! stage {
-    ($metric:ident, $stage:literal, $next:literal, $item:ident -> $content:expr) => {
+    ($metric:ident, $perfmetric:ident, $stage:literal, $next:literal, $item:ident -> $content:expr) => {
         |$item| async {
             // TODO: Dont create new keyvalues every time
             $metric.add(
@@ -51,9 +42,19 @@ macro_rules! stage {
                     KeyValue::new("state", "active"),
                 ],
             );
+            eprintln!("starting {}", $stage);
+            tokio::time::sleep(::tokio::time::Duration::from_secs(1)).await;
+            let before = std::time::Instant::now();
+            eprintln!("finished {}", $stage);
 
             let result = $content;
 
+            let duration = before.elapsed();
+
+            $perfmetric.record(
+                duration.as_millis() as u64,
+                &[KeyValue::new("stage", $stage)],
+            );
             $metric.add(
                 -1,
                 &[
@@ -113,9 +114,20 @@ pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
         .with_description("Track the number of tasks in the pipeline")
         .with_unit("repo")
         .build();
+    let job_duration = meter
+        .u64_histogram("indexer.pipeline.duration")
+        .with_unit("ms")
+        .with_description("Pipeline job duration")
+        .with_boundaries(
+            vec![1, 3, 10, 31, 100, 316, 1000, 3160, 10000]
+                .iter()
+                .map(|x| *x as f64 + 1000.0)
+                .collect::<Vec<f64>>(),
+        )
+        .build();
 
     let mut res = db
-        .query("SELECT count() as c FROM li_did GROUP ALL;")
+        .query("SELECT count() as c FROM latest_backfill WHERE at != NONE GROUP ALL;")
         .await
         .unwrap();
     let count = res.take::<Option<i64>>((0, "c")).unwrap().unwrap_or(0);
@@ -125,6 +137,7 @@ pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
     repos_indexed.add(count as u64, &[]);
 
     let buffer_size = ARGS.pipeline_buffer_size;
+    let download_buffer_multiplier = ARGS.download_buffer_multiplier;
 
     RepoStream::new(OLDEST_USEFUL_ANCHOR.to_string(), db.clone())
         .map(|did| async {
@@ -142,38 +155,47 @@ pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
             item
         })
         .buffer_unordered(buffer_size)
-        .map(stage!(tracker, "check_indexed", "get_service", item ->
-            item.check_indexed().await
-        ))
+        .map(
+            stage!(tracker, job_duration, "check_indexed", "get_service", item ->
+                item.check_indexed().await
+            ),
+        )
         .buffer_unordered(buffer_size)
         .filter_map(filter_result!(tracker, "get_service"))
-        .map(stage!(tracker, "get_service", "download_repo", item ->
-            item.get_service().await
-        ))
+        .map(
+            stage!(tracker, job_duration, "get_service", "download_repo", item ->
+                item.get_service().await
+            ),
+        )
         .buffer_unordered(buffer_size)
         .filter_map(filter_result!(tracker, "download_repo"))
-        .map(stage!(tracker, "download_repo", "deserialize_repo", item ->
-            item.download_repo().await
-        ))
-        .buffer_unordered(buffer_size)
+        .map(
+            stage!(tracker, job_duration, "download_repo", "deserialize_repo", item ->
+                item.download_repo().await
+            ),
+        )
+        .buffer_unordered(buffer_size * download_buffer_multiplier)
         .filter_map(filter_result!(tracker, "deserialize_repo"))
         .map(
-            stage!(tracker, "deserialize_repo", "files_to_updates", item ->
+            stage!(tracker, job_duration, "deserialize_repo", "files_to_updates", item ->
                 item.deserialize_repo().await
             ),
         )
         .buffer_unordered(buffer_size)
         .filter_map(filter_result!(tracker, "files_to_updates"))
-        .map(stage!(tracker, "files_to_updates", "apply_updates", item ->
-            item.files_to_updates().await
-        ))
+        .map(
+            stage!(tracker, job_duration, "files_to_updates", "apply_updates", item ->
+                item.files_to_updates().await
+            ),
+        )
         .buffer_unordered(buffer_size)
         .filter_map(filter_result!(tracker, "apply_updates"))
-        .map(stage!(tracker, "apply_updates", "print_report", item ->
-            {
-                // println!("Items: {:?}", item.state.updates.len());
-                item.apply_updates().await}
-        ))
+        .map(
+            stage!(tracker, job_duration, "apply_updates", "print_report", item ->
+                    // println!("Items: {:?}", item.state.updates.len());
+                    item.apply_updates().await
+            ),
+        )
         .buffer_unordered(buffer_size)
         .filter_map(filter_result!(tracker, "print_report"))
         .for_each(|x| async {

@@ -1,6 +1,18 @@
+use std::{sync::LazyLock, time::Duration};
+
 use anyhow::{Context, Result};
 use definitions::{JetstreamCursor, Record};
-use surrealdb::{engine::any::Any, opt::auth::Root, RecordId, Surreal};
+use surrealdb::{
+    engine::{
+        any::Any,
+        remote::ws::{Client, Ws},
+    },
+    opt::{
+        auth::{Credentials, Root},
+        Config,
+    },
+    RecordId, Surreal,
+};
 use tracing::{debug, info};
 
 use crate::config::ARGS;
@@ -9,6 +21,8 @@ pub mod definitions;
 pub mod handlers;
 pub mod repo_indexer;
 mod utils;
+
+static DB: LazyLock<Surreal<Client>> = LazyLock::new(Surreal::init);
 
 /// Connect to the database
 pub async fn connect(
@@ -22,6 +36,14 @@ pub async fn connect(
     let db = surrealdb::engine::any::connect(db_endpoint)
         .with_capacity(ARGS.surrealdb_capacity)
         .await?;
+    db.signin(Root {
+        username: "root",
+        password: "root",
+    })
+    .await?;
+
+    //     let config = Config::default().query_timeout(Duration::from_millis(1500));
+    // let dbb = DB.connect::<Ws>("127.0.0.1:8000", Op)
 
     // sign in to the server
 
