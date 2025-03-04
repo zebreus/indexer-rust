@@ -95,84 +95,85 @@ macro_rules! done {
 macro_rules! pump_stage {
     ($metric:ident, $perfmetric:ident, $stage:literal, $next:literal, $function:ident) => {
         |x| async {
-            eprintln!("starting {}", $stage);
+            tokio::task::spawn(async move {
+                eprintln!("starting {}", $stage);
 
-            // TODO: Dont create new keyvalues every time
-            $metric.add(
-                -1,
-                &[
-                    KeyValue::new("stage", $stage),
-                    KeyValue::new("state", "queued"),
-                ],
-            );
-            $metric.add(
-                1,
-                &[
-                    KeyValue::new("stage", $stage),
-                    KeyValue::new("state", "active"),
-                ],
-            );
-            tokio::time::sleep(::tokio::time::Duration::from_secs(1)).await;
-            let before = std::time::Instant::now();
-            let result = tokio::task::spawn(tokio::time::timeout(
-                tokio::time::Duration::from_secs(ARGS.pipeline_stage_timeout),
-                x.$function(),
-            ))
-            .await;
-            let duration = before.elapsed();
-            eprintln!(
-                "pre         finished {} in {:02}",
-                $stage,
-                duration.as_millis() as f64 / 1000.0
-            );
-            let Ok(result) = result else {
-                panic!("Spawn error in {}", $stage);
-            };
-            let Ok(result) = result else {
-                panic!("Timeout in {}", $stage);
-            };
-
-            // $perfmetric.record(
-            //     duration.as_millis() as u64,
-            //     &[KeyValue::new("stage", $stage)],
-            // );
-            $metric.add(
-                -1,
-                &[
-                    KeyValue::new("stage", $stage),
-                    KeyValue::new("state", "active"),
-                ],
-            );
-
-            let result = match result {
-                Err(error) => {
-                    eprintln!(
-                        "failed {} in {:02}",
-                        $stage,
-                        duration.as_millis() as f64 / 1000.0
-                    );
-
-                    // error!(target: "indexer", "Failed to index repo: {}", error);
-                    return None;
-                }
-                Ok(result) => result,
-            };
-
-            if $next != "done" {
+                // TODO: Dont create new keyvalues every time
                 $metric.add(
-                    1,
+                    -1,
                     &[
-                        KeyValue::new("stage", $next),
+                        KeyValue::new("stage", $stage),
                         KeyValue::new("state", "queued"),
                     ],
                 );
-            }
-            eprintln!(
-                "finished {} in {:02}",
-                $stage,
-                duration.as_millis() as f64 / 1000.0
-            );
-            return Some(result);
+                $metric.add(
+                    1,
+                    &[
+                        KeyValue::new("stage", $stage),
+                        KeyValue::new("state", "active"),
+                    ],
+                );
+                tokio::time::sleep(::tokio::time::Duration::from_secs(1)).await;
+                let before = std::time::Instant::now();
+                let result = tokio::time::timeout(
+                    tokio::time::Duration::from_secs(ARGS.pipeline_stage_timeout),
+                    x.$function(),
+                )
+                .await;
+                let duration = before.elapsed();
+                eprintln!(
+                    "pre         finished {} in {:02}",
+                    $stage,
+                    duration.as_millis() as f64 / 1000.0
+                );
+                let Ok(result) = result else {
+                    panic!("Timeout in {}", $stage);
+                };
+
+                // $perfmetric.record(
+                //     duration.as_millis() as u64,
+                //     &[KeyValue::new("stage", $stage)],
+                // );
+                $metric.add(
+                    -1,
+                    &[
+                        KeyValue::new("stage", $stage),
+                        KeyValue::new("state", "active"),
+                    ],
+                );
+
+                let result = match result {
+                    Err(error) => {
+                        eprintln!(
+                            "failed {} in {:02}",
+                            $stage,
+                            duration.as_millis() as f64 / 1000.0
+                        );
+
+                        // error!(target: "indexer", "Failed to index repo: {}", error);
+                        return None;
+                    }
+                    Ok(result) => result,
+                };
+
+                if $next != "done" {
+                    $metric.add(
+                        1,
+                        &[
+                            KeyValue::new("stage", $next),
+                            KeyValue::new("state", "queued"),
+                        ],
+                    );
+                }
+                eprintln!(
+                    "finished {} in {:02}",
+                    $stage,
+                    duration.as_millis() as f64 / 1000.0
+                );
+                return Some(result);
+            })
+            .await
+            .expect("Failed to spawn task in a pump stage")
         }
     };
 }
