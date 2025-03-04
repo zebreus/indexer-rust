@@ -336,6 +336,7 @@ impl BigUpdate {
         let format_output = tokio::task::block_in_place(|| format!("{:?}", &self));
         //TODO: Bundle this into a function
         let query_string = r#"
+            BEGIN;
             INSERT IGNORE INTO did $dids RETURN NONE;
             INSERT IGNORE INTO latest_backfill $latest_backfills RETURN NONE;
             INSERT IGNORE INTO feed $feeds RETURN NONE;
@@ -357,6 +358,7 @@ impl BigUpdate {
             INSERT RELATION INTO replies $replies_relations RETURN NONE;
             INSERT RELATION INTO follow $follows RETURN NONE;
             INSERT INTO latest_backfill $overwrite_latest_backfill RETURN NONE;
+            COMMIT;
         "#;
 
         let before_update = Instant::now();
