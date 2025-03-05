@@ -4,20 +4,17 @@ use serde::Deserialize;
 use std::{
     collections::{HashSet, VecDeque},
     future::{Future, IntoFuture},
+    pin::Pin,
     task::Poll,
 };
-use surrealdb::{engine::any::Any, Surreal};
+use surrealdb::{engine::any::Any, Response, Surreal};
 use tracing::{error, trace};
 
 pub struct RepoStream {
     buffer: VecDeque<String>,
     processed_dids: HashSet<String>,
     db: Surreal<Any>,
-    db_future: Option<
-        std::pin::Pin<
-            Box<dyn Future<Output = Result<surrealdb::Response, surrealdb::Error>> + Send>,
-        >,
-    >,
+    db_future: Option<Pin<Box<dyn Future<Output = surrealdb::Result<Response>> + Send>>>,
 }
 
 #[allow(dead_code)]

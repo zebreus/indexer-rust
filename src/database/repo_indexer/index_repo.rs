@@ -71,7 +71,7 @@ pub struct NodeData {
 #[instrument(skip_all)]
 fn convert_repo_to_update(
     repo: Vec<u8>,
-    did: &String,
+    did: &str,
     retrieval_time: surrealdb::sql::Datetime,
 ) -> anyhow::Result<BigUpdate> {
     // Deserialize CAR file
@@ -112,7 +112,7 @@ fn convert_repo_to_update(
                 let collection = parts.next()?.to_string();
                 let rkey = RecordKey::new(parts.next()?.to_string()).ok()?;
                 let update = create_big_update(
-                    Did::new(did.clone()).unwrap(),
+                    Did::new(did.to_string()).unwrap(),
                     did_key.clone(),
                     collection,
                     rkey,

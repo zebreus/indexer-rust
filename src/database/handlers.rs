@@ -13,7 +13,7 @@ use tracing::warn;
 pub async fn handle_event(db: &Surreal<Any>, event: Kind) -> Result<()> {
     // Handle event types
     match event {
-        Kind::CommitEvent {
+        Kind::Commit {
             did,
             time_us,
             commit,
@@ -39,7 +39,7 @@ pub async fn handle_event(db: &Surreal<Any>, event: Kind) -> Result<()> {
                 }
             }
         }
-        Kind::IdentityEvent {
+        Kind::Identity {
             did,
             time_us,
             identity,
@@ -55,7 +55,7 @@ pub async fn handle_event(db: &Surreal<Any>, event: Kind) -> Result<()> {
                 })
                 .await?;
         }
-        Kind::KeyEvent {
+        Kind::Key {
             did,
             time_us,
             account,

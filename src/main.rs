@@ -6,8 +6,6 @@ use jetstream_consumer::attach_jetstream;
 use metrics_reporter::export_system_metrics;
 use observability::init_observability;
 use std::{
-    future::Future,
-    pin::Pin,
     process::exit,
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
@@ -78,15 +76,14 @@ async fn application_main() -> anyhow::Result<()> {
     let indexer_task = start_full_repo_indexer(db.to_owned()).boxed_local();
 
     // Add all tasks to a list
-    let mut tasks: FuturesUnordered<Pin<Box<dyn Future<Output = Result<(), anyhow::Error>>>>> =
-        FuturesUnordered::new();
-    tasks.push(metrics_task);
-    if ARGS.jetstream.unwrap_or(true) {
-        tasks.push(jetstream_task);
-    }
+    let mut tasks: FuturesUnordered<_> = FuturesUnordered::new();
     if ARGS.backfill.unwrap_or(true) {
         tasks.push(indexer_task);
     }
+    if ARGS.jetstream.unwrap_or(true) {
+        tasks.push(jetstream_task);
+    }
+    tasks.push(metrics_task);
 
     // Wait for the first task to exit
     let first_exited_task = tasks.next().await;

@@ -48,19 +48,19 @@ pub struct Account {
 #[serde(tag = "kind")]
 pub enum Kind {
     #[serde(rename = "commit")]
-    CommitEvent {
+    Commit {
         did: Did,
         time_us: u64,
         commit: Commit,
     },
     #[serde(rename = "identity")]
-    IdentityEvent {
+    Identity {
         did: Did,
         time_us: u64,
         identity: Identity,
     },
     #[serde(rename = "account")]
-    KeyEvent {
+    Key {
         did: Did,
         time_us: u64,
         account: Account,

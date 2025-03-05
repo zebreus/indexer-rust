@@ -15,9 +15,9 @@ pub async fn handle_message(
 
     // update cursor
     let time = match &event {
-        events::Kind::CommitEvent { time_us, .. } => *time_us,
-        events::Kind::IdentityEvent { time_us, .. } => *time_us,
-        events::Kind::KeyEvent { time_us, .. } => *time_us,
+        events::Kind::Commit { time_us, .. } => *time_us,
+        events::Kind::Identity { time_us, .. } => *time_us,
+        events::Kind::Key { time_us, .. } => *time_us,
     };
     state.update_cursor(time);
     if update_cursor {

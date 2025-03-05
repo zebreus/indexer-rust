@@ -72,10 +72,10 @@ pub fn did_to_key(did: &str) -> Result<String> {
 /// Converts a DID to a (full) key
 pub fn did_to_key_impl(did: &str, full: bool) -> Result<String> {
     // did:plc covers 99.99% of all DIDs
-    let val = if did.starts_with("did:plc:") {
-        format!("plc_{}", &did[8..])
-    } else if did.starts_with("did:web:") {
-        format!("web_{}", &did[8..].replace('.', "_").replace('-', "__"))
+    let val = if let Some(id) = did.strip_prefix("did:plc:") {
+        format!("plc_{}", id)
+    } else if let Some(id) = did.strip_prefix("did:web:") {
+        format!("web_{}", &id.replace('.', "_").replace('-', "__"))
     } else {
         anyhow::bail!("Invalid DID {}", did);
     };
@@ -85,10 +85,10 @@ pub fn did_to_key_impl(did: &str, full: bool) -> Result<String> {
     }
 
     if full {
-        Ok(format!("did:{}", val))
-    } else {
-        Ok(val)
+        return Ok(format!("did:{}", val));
     }
+
+    Ok(val)
 }
 
 pub fn unsafe_user_key_to_did(key: &str) -> String {

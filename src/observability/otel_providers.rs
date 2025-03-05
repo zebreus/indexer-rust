@@ -26,13 +26,10 @@ use std::sync::{
 use tracing::Subscriber;
 use tracing_subscriber::{registry::LookupSpan, EnvFilter, Layer};
 
-const RESOURCE: LazyLock<Resource> = LazyLock::new(|| {
-    // let instance_id = Uuid::new_v4();
-
+static RESOURCE: LazyLock<Resource> = LazyLock::new(|| {
     let mut attributes = vec![
         KeyValue::new(SERVICE_NAME, env!("CARGO_PKG_NAME")),
         KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
-        // KeyValue::new(SERVICE_INSTANCE_ID, instance_id.to_string()),
         KeyValue::new(DEPLOYMENT_ENVIRONMENT_NAME, "develop"),
     ];
 

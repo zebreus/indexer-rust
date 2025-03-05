@@ -52,7 +52,9 @@ impl<
     type Next = O;
     const NAME: &'static str = "First";
     const FIRST: bool = true;
-    async fn run(self) -> anyhow::Result<Self::Next> { Ok((self.f)(self.a)) }
+    async fn run(self) -> anyhow::Result<Self::Next> {
+        Ok((self.f)(self.a))
+    }
 }
 
 pub fn create_stage<
@@ -75,10 +77,10 @@ pub fn create_stage<
     }
 }
 
-pub fn next_stage<FROM: Stage>(
+pub fn next_stage<FROM>(
 ) -> impl Fn(FROM) -> Pin<Box<dyn Future<Output = Option<FROM::Next>> + Send + 'static>>
 where
-    FROM: Send + Sync + 'static + Stage,
+    FROM: Stage + Send + Sync + 'static,
     FROM::Next: Send + Sync + 'static,
 {
     static TRACKER: LazyLock<UpDownCounter<i64>> = LazyLock::new(|| {
