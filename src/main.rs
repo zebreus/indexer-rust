@@ -31,7 +31,6 @@ fn main() {
     let mut rt_builder = Builder::new_multi_thread();
     rt_builder
         .enable_all()
-        .worker_threads(32)
         .max_blocking_threads(512 * 512)
         .enable_time()
         .enable_io()
@@ -77,10 +76,10 @@ async fn application_main() -> anyhow::Result<()> {
 
     // Add all tasks to a list
     let mut tasks: FuturesUnordered<_> = FuturesUnordered::new();
-    if ARGS.backfill.unwrap_or(true) {
+    if !ARGS.no_backfill {
         tasks.push(indexer_task);
     }
-    if ARGS.jetstream.unwrap_or(true) {
+    if !ARGS.no_jetstream {
         tasks.push(jetstream_task);
     }
     tasks.push(metrics_task);

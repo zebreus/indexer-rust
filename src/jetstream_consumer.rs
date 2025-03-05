@@ -1,8 +1,8 @@
+use crate::{database, websocket};
 use anyhow::Context;
 use futures::{stream::FuturesUnordered, StreamExt};
 use surrealdb::{engine::any::Any, Surreal};
-
-use crate::{database, websocket};
+use tracing::error;
 
 const JETSTREAM_HOSTS: [&str; 5] = [
     "jetstream1.us-west.bsky.network",
@@ -15,16 +15,24 @@ const JETSTREAM_HOSTS: [&str; 5] = [
 pub async fn attach_jetstream(db: Surreal<Any>, certificate: String) -> anyhow::Result<()> {
     let mut jetstream_tasks = JETSTREAM_HOSTS
         .iter()
-        .map(|host| start_jetstream_consumer(db.clone(), host.to_string(), certificate.clone()))
+        .map(|host| {
+            tokio::task::spawn(start_jetstream_consumer(
+                db.clone(),
+                host.to_string(),
+                certificate.clone(),
+            ))
+        })
         .collect::<FuturesUnordered<_>>();
 
     loop {
         let result = jetstream_tasks.next().await;
-        let Some(result) = result else {
+        let Some(Ok(Ok(_))) = result else {
+            error!("Jetstream consumer task failed");
             break;
         };
-        result?;
     }
+
+    error!("All jetstream consumer task failed");
 
     Ok(())
 }

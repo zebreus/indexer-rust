@@ -265,7 +265,7 @@ impl Stage for ApplyUpdates {
 
     #[instrument(skip(self), fields(did = self.common.did), parent = self.common.span.clone())]
     async fn run(self) -> anyhow::Result<Self::Next> {
-        if !ARGS.dont_write_when_backfilling.unwrap_or(false) {
+        if !ARGS.no_write_when_backfilling {
             self.update.apply(&self.common.db, "backfill").await?;
         } else {
             warn!("Skipping writing to the database and sleeping instead");

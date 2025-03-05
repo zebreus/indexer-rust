@@ -15,7 +15,7 @@ pub fn tokio_console_layer<S>() -> Option<impl Layer<S>>
 where
     S: Subscriber + for<'span> LookupSpan<'span>,
 {
-    if !ARGS.console.unwrap_or(false) {
+    if !ARGS.tokio_console {
         return None;
     }
     Some(ConsoleLayer::builder().with_default_env().spawn())

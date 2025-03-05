@@ -80,7 +80,7 @@ static RESOURCE: LazyLock<Resource> = LazyLock::new(|| {
 });
 
 fn init_logger() -> Option<SdkLoggerProvider> {
-    if !ARGS.otel_logs.unwrap_or(true) {
+    if ARGS.no_otel_logs {
         return None;
     }
     let otlp_log_exporter = LogExporter::builder().with_tonic().build().unwrap();
@@ -93,7 +93,7 @@ fn init_logger() -> Option<SdkLoggerProvider> {
 }
 
 fn init_meter() -> Option<SdkMeterProvider> {
-    if !ARGS.otel_metrics.unwrap_or(true) {
+    if ARGS.no_otel_metrics {
         return None;
     }
     let otlp_metric_exporter = MetricExporter::builder()
@@ -115,7 +115,7 @@ fn init_meter() -> Option<SdkMeterProvider> {
 }
 
 fn init_tracer() -> Option<SdkTracerProvider> {
-    if !ARGS.otel_tracing.unwrap_or(true) {
+    if !ARGS.otel_tracing {
         return None;
     }
     global::set_text_map_propagator(TraceContextPropagator::new());
