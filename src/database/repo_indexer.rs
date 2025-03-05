@@ -31,19 +31,21 @@ pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
     let databases = ARGS
         .db
         .iter()
-        .map(|x| async { connect(x, &ARGS.username, &ARGS.password).await.unwrap() })
+        .map(|endpoint| async { connect(endpoint).await.unwrap() })
         .collect::<FuturesUnordered<_>>()
         .collect::<Vec<_>>()
         .await;
 
     // Create a stream of dids + captured database and http client
-    let dids = RepoStream::new(db.clone()).enumerate().map(move |(id, x)| {
-        (
-            x.to_string(),
-            databases.get(id.rem(databases.len())).unwrap().clone(),
-            http_client.clone(),
-        )
-    });
+    let dids = RepoStream::new(db.clone())
+        .enumerate()
+        .map(move |(id, did)| {
+            (
+                did,
+                databases.get(id.rem(databases.len())).unwrap().clone(),
+                http_client.clone(),
+            )
+        });
 
     // Create the processing pipeline
     let (mut output_receiver, _join_handle) = pumps::Pipeline::from_stream(dids)

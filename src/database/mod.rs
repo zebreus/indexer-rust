@@ -1,51 +1,26 @@
-use std::{sync::LazyLock, time::Duration};
-
+use crate::config::ARGS;
 use anyhow::{Context, Result};
 use definitions::{JetstreamCursor, Record};
-use surrealdb::{
-    engine::{
-        any::Any,
-        remote::ws::{Client, Ws},
-    },
-    opt::{
-        auth::{Credentials, Root},
-        Config,
-    },
-    RecordId, Surreal,
-};
-use tracing::{debug, info};
-
-use crate::config::ARGS;
+use surrealdb::{engine::any::Any, opt::auth::Root, RecordId, Surreal};
+use tracing::info;
 
 pub mod definitions;
 pub mod handlers;
 pub mod repo_indexer;
 mod utils;
 
-static DB: LazyLock<Surreal<Client>> = LazyLock::new(Surreal::init);
-
 /// Connect to the database
-pub async fn connect(
-    db_endpoint: &str,
-    username: &str,
-    password: &str,
-) -> anyhow::Result<Surreal<Any>> {
+pub async fn connect(db_endpoint: &str) -> anyhow::Result<Surreal<Any>> {
     // connect to the database
     info!(target: "indexer", "Connecting to the database at {}", db_endpoint);
-    // let db = Surreal::new::<_>(db_endpoint).await?;
     let db = surrealdb::engine::any::connect(db_endpoint)
         .with_capacity(ARGS.surrealdb_capacity)
         .await?;
     db.signin(Root {
-        username: "root",
-        password: "root",
+        username: &ARGS.username,
+        password: &ARGS.password,
     })
     .await?;
-
-    //     let config = Config::default().query_timeout(Duration::from_millis(1500));
-    // let dbb = DB.connect::<Ws>("127.0.0.1:8000", Op)
-
-    // sign in to the server
 
     definitions::init(&db)
         .await
