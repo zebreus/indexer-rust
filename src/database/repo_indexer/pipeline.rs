@@ -28,10 +28,10 @@ impl NextStage for NoNextStage {
 }
 
 pub trait Stage {
-    type Output: NextStage + Sync + Send + 'static;
+    type Next: NextStage + Sync + Send + 'static;
     const NAME: &'static str;
     const FIRST: bool = false;
-    fn run(self) -> impl Future<Output = anyhow::Result<Self::Output>> + Send + Sync + 'static;
+    fn run(self) -> impl Future<Output = anyhow::Result<Self::Next>> + Send + Sync + 'static;
 }
 
 pub struct FirstStage<
@@ -49,10 +49,10 @@ impl<
         F: Fn(I) -> O + Sync + Send + 'static,
     > Stage for FirstStage<I, O, F>
 {
-    type Output = O;
+    type Next = O;
     const NAME: &'static str = "First";
     const FIRST: bool = true;
-    fn run(self) -> impl Future<Output = anyhow::Result<Self::Output>> + Send + Sync + 'static {
+    fn run(self) -> impl Future<Output = anyhow::Result<Self::Next>> + Send + Sync + 'static {
         async move { Ok((self.f)(self.a)) }
     }
 }
@@ -78,10 +78,10 @@ pub fn create_stage<
 }
 
 pub fn next_stage<FROM: Stage>(
-) -> impl Fn(FROM) -> Pin<Box<dyn Future<Output = Option<FROM::Output>> + Send + 'static>>
+) -> impl Fn(FROM) -> Pin<Box<dyn Future<Output = Option<FROM::Next>> + Send + 'static>>
 where
     FROM: Send + Sync + 'static + Stage,
-    FROM::Output: Send + Sync + 'static,
+    FROM::Next: Send + Sync + 'static,
 {
     static TRACKER: LazyLock<UpDownCounter<i64>> = LazyLock::new(|| {
         global::meter("indexer")
@@ -209,11 +209,11 @@ where
                 };
 
                 // If we are done, we track as a completed pipeline. Otherwise track as queued for the next stage.
-                if !FROM::Output::DONE {
+                if !FROM::Next::DONE {
                     TRACKER.add(
                         1,
                         &[
-                            KeyValue::new("stage", FROM::Output::NAME),
+                            KeyValue::new("stage", FROM::Next::NAME),
                             KeyValue::new("state", "queued"),
                         ],
                     );

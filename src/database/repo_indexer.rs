@@ -1,7 +1,7 @@
 use super::connect;
 use crate::config::ARGS;
 use futures::{stream::FuturesUnordered, StreamExt};
-use index_repo::PipelineItem;
+use index_repo::DownloadService;
 use pipeline::{create_stage, next_stage};
 use repo_stream::RepoStream;
 use reqwest::Client;
@@ -48,7 +48,7 @@ pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
     // Create the processing pipeline
     let (mut output_receiver, _join_handle) = pumps::Pipeline::from_stream(dids)
         .filter_map(
-            create_stage(|(did, db, http_client)| PipelineItem::new(db, http_client, did)),
+            create_stage(|(did, db, http_client)| DownloadService::new(db, http_client, did)),
             unordered!(concurrent_elements),
         )
         .backpressure(buffer_size)
