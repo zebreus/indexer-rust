@@ -133,6 +133,7 @@ fn convert_repo_to_update(
     Ok(update)
 }
 
+#[derive(Debug)]
 pub struct CommonState {
     db: Surreal<Any>,
     http_client: Client,
@@ -141,21 +142,25 @@ pub struct CommonState {
 }
 
 /// First pipeline stage
+#[derive(Debug)]
 pub struct DownloadService {
     common: CommonState,
 }
 /// Second pipeline stage
+#[derive(Debug)]
 pub struct DownloadRepo {
     common: CommonState,
     service: PlcDirectoryDidResponseService,
 }
 /// Third pipeline stage
+#[derive(Debug)]
 pub struct ProcessRepo {
     common: CommonState,
     repo: Vec<u8>,
     retrieval_time: surrealdb::sql::Datetime,
 }
 /// Fourth pipeline stage
+#[derive(Debug)]
 pub struct ApplyUpdates {
     common: CommonState,
     update: BigUpdate,
@@ -183,6 +188,7 @@ impl Stage for DownloadService {
     type Next = DownloadRepo;
     const NAME: &str = "download_information";
 
+    #[instrument(skip(self), fields(did = self.common.did), parent = self.common.span.clone())]
     async fn run(self) -> anyhow::Result<Self::Next> {
         let resp = self
             .common
@@ -208,6 +214,7 @@ impl Stage for DownloadRepo {
     type Next = ProcessRepo;
     const NAME: &str = "download_repo";
 
+    #[instrument(skip(self), fields(did = self.common.did), parent = self.common.span.clone())]
     async fn run(self) -> anyhow::Result<Self::Next> {
         let retrival_time = surrealdb::sql::Datetime::from(chrono::Utc::now());
         let get_repo_response = self
@@ -238,6 +245,7 @@ impl Stage for ProcessRepo {
     type Next = ApplyUpdates;
     const NAME: &str = "process_repo";
 
+    #[instrument(skip(self), fields(did = self.common.did), parent = self.common.span.clone())]
     async fn run(self) -> anyhow::Result<Self::Next> {
         let did = self.common.did.clone();
         let big_update =
@@ -254,8 +262,8 @@ impl Stage for ProcessRepo {
 impl Stage for ApplyUpdates {
     type Next = NoNextStage;
     const NAME: &str = "apply_updates";
-    // type F = Future<Output = anyhow::Result<Self::Output>> + Send + Sync + 'static;
 
+    #[instrument(skip(self), fields(did = self.common.did), parent = self.common.span.clone())]
     async fn run(self) -> anyhow::Result<Self::Next> {
         if !ARGS.dont_write_when_backfilling.unwrap_or(false) {
             self.update.apply(&self.common.db, "backfill").await?;
