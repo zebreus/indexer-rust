@@ -11,6 +11,7 @@ rustup default nightly
 if ! git status; then
     git clone https://github.com/zebreus/indexer-rust
     cd indexer-rust
+    git checkout testing
 fi
 cargo install samply
 echo '1' >/proc/sys/kernel/perf_event_paranoid
@@ -19,6 +20,9 @@ echo '-1' >/proc/sys/kernel/perf_event_paranoid
 wget https://github.com/zebreus/upload/releases/download/v0.2/upload.binary
 chmod +x upload.binary
 mv upload.binary /usr/local/bin/upload
+
+curl -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
+curl -sSf https://install.surrealdb.com | sh
 
 export OTEL_EXPORTER_OTLP_ENDPOINT="http://monitoring.indexer.skyfeedlol.lol:39291"
 echo 'export OTEL_EXPORTER_OTLP_ENDPOINT="http://monitoring.indexer.skyfeedlol.lol:39291"' >~/.bashrc
