@@ -70,6 +70,9 @@ pub struct Args {
     /// If this is longer than the pipeline_stage_timeout, the pipeline_stage_timeout will be used
     #[arg(long, default_value = "60")]
     pub directory_download_timeout: u64,
+    /// Number of DIDs the RepoStream should prefetch
+    #[arg(long, default_value = "10000")]
+    pub repo_stream_buffer_size: usize,
 }
 
 pub const ARGS: LazyLock<Args> = LazyLock::new(|| Args::parse());
