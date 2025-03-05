@@ -2,7 +2,7 @@ use super::pipeline::Stage;
 use crate::{
     config::ARGS,
     database::{
-        handlers::{on_commit_event_createorupdate, BigUpdate},
+        big_update::{create_big_update, BigUpdate},
         repo_indexer::pipeline::NoNextStage,
     },
 };
@@ -111,7 +111,7 @@ fn convert_repo_to_update(
 
                 let collection = parts.next()?.to_string();
                 let rkey = RecordKey::new(parts.next()?.to_string()).ok()?;
-                let update = on_commit_event_createorupdate(
+                let update = create_big_update(
                     Did::new(did.clone().into()).unwrap(),
                     did_key.clone(),
                     collection,

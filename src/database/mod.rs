@@ -4,6 +4,7 @@ use definitions::{JetstreamCursor, Record};
 use surrealdb::{engine::any::Any, opt::auth::Root, RecordId, Surreal};
 use tracing::info;
 
+pub mod big_update;
 pub mod definitions;
 pub mod handlers;
 pub mod repo_indexer;
