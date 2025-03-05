@@ -29,12 +29,12 @@ struct LatestBackfill {
 
 impl RepoStream {
     pub fn new(db: Surreal<Any>) -> Self {
-        return Self {
+        Self {
             buffer: VecDeque::new(),
             processed_dids: HashSet::new(),
             db,
             db_future: None,
-        };
+        }
     }
 }
 

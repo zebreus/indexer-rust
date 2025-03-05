@@ -175,7 +175,7 @@ impl OtelProviders {
     /// Does nothing if already shutdown
     pub fn shutdown(&self) {
         let shutdown = self.shutdown.lock();
-        if shutdown.as_ref().map_or(false, |shutdown| **shutdown) {
+        if shutdown.as_ref().is_ok_and(|shutdown| **shutdown) {
             // Already shutdown
             return;
         }
@@ -272,7 +272,7 @@ impl OtelProviders {
         if let Some(metrics_layer) = self.otel_metrics_layer() {
             layers.push(Box::new(metrics_layer));
         }
-        return layers;
+        layers
     }
 }
 

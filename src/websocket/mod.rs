@@ -81,7 +81,7 @@ pub async fn start(
     loop {
         // get current cursor
         let cursor = {
-            let c = (&state).cursor.load(Ordering::Relaxed) as u64;
+            let c = state.cursor.load(Ordering::Relaxed);
             if c == 0 {
                 None
             } else {
@@ -109,7 +109,7 @@ pub async fn start(
         // rewind cursor by 10 seconds
         {
             const REWIND_TIME: u64 = 10_000_000; // 10 seconds in microseconds
-            let cursor = (&state).cursor.fetch_sub(REWIND_TIME, Ordering::Relaxed);
+            let cursor = state.cursor.fetch_sub(REWIND_TIME, Ordering::Relaxed);
             info!(target: "indexer", "Rewinding cursor by 10 seconds: {} -> {}", cursor, cursor - REWIND_TIME);
         }
 
@@ -154,7 +154,7 @@ async fn manage_ws(
                 let text = String::from_utf8(msg.payload.to_vec())
                     .context("Failed to decode text message")?;
 
-                let res = handler::handle_message(&state, text, update_cursor).await;
+                let res = handler::handle_message(state, text, update_cursor).await;
 
                 if res.is_err() {
                     warn!("error while handling {}", res.unwrap_err());

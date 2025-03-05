@@ -69,5 +69,5 @@ pub enum Kind {
 
 /// Parse an event from a string
 pub fn parse_event(mut msg: String) -> anyhow::Result<Kind> {
-    Ok(unsafe { simd_json::from_str(msg.as_mut_str()) }.context("Failed to parse event")?)
+    unsafe { simd_json::from_str(msg.as_mut_str()) }.context("Failed to parse event")
 }

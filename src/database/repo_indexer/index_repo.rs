@@ -88,7 +88,7 @@ fn convert_repo_to_update(
 
     // Create references to the files and the did, so we can use them in the closure
     let files_ref = &files;
-    let did_key = &crate::database::utils::did_to_key(&did)?;
+    let did_key = &crate::database::utils::did_to_key(did)?;
 
     let mut update = files_ref
         .iter()
@@ -112,7 +112,7 @@ fn convert_repo_to_update(
                 let collection = parts.next()?.to_string();
                 let rkey = RecordKey::new(parts.next()?.to_string()).ok()?;
                 let update = create_big_update(
-                    Did::new(did.clone().into()).unwrap(),
+                    Did::new(did.clone()).unwrap(),
                     did_key.clone(),
                     collection,
                     rkey,
@@ -128,7 +128,7 @@ fn convert_repo_to_update(
         })?;
 
     // Add the timestamp of when we retrieved the repo to the update
-    update.add_timestamp(&did, retrieval_time);
+    update.add_timestamp(did, retrieval_time);
 
     Ok(update)
 }
@@ -204,7 +204,7 @@ impl Stage for DownloadService {
             self.common.did
         ))?;
         Ok(DownloadRepo {
-            service: service,
+            service,
             common: self.common,
         })
     }

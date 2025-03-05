@@ -75,7 +75,7 @@ pub struct Args {
     pub repo_stream_buffer_size: usize,
 }
 
-pub const ARGS: LazyLock<Args> = LazyLock::new(|| Args::parse());
+pub const ARGS: LazyLock<Args> = LazyLock::new(Args::parse);
 
 // impl Args {
 //     /// Dump configuration to log

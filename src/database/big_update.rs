@@ -733,7 +733,7 @@ pub fn create_big_update(
                 labels: d
                     .labels
                     .as_ref()
-                    .and_then(|d| utils::extract_self_labels_profile(d)),
+                    .and_then(utils::extract_self_labels_profile),
                 extra_data: process_extra_data(&d.extra_data)?,
             };
             big_update.did.push(profile);
@@ -748,7 +748,7 @@ pub fn create_big_update(
             big_update.follows.push(UpdateFollow {
                 from: RecordId::from(("did", from)),
                 to: RecordId::from(("did", to.clone())),
-                id: id,
+                id,
                 created_at,
             });
 
@@ -767,8 +767,8 @@ pub fn create_big_update(
 
             big_update.likes.push(UpdateLike {
                 from: RecordId::from(("did", from)),
-                to: to,
-                id: id,
+                to,
+                id,
                 created_at,
             });
         }
@@ -781,8 +781,8 @@ pub fn create_big_update(
 
             big_update.reposts.push(UpdateRepost {
                 from: RecordId::from(("did", from)),
-                to: to,
-                id: id,
+                to,
+                id,
                 created_at,
             });
         }
@@ -796,7 +796,7 @@ pub fn create_big_update(
             big_update.blocks.push(UpdateBlock {
                 from: RecordId::from(("did", from)),
                 to: RecordId::from(("did", to.clone())),
-                id: id,
+                id,
                 created_at,
             });
         }
@@ -809,8 +809,8 @@ pub fn create_big_update(
 
             big_update.listblocks.push(UpdateListBlock {
                 from: RecordId::from(("did", from)),
-                to: to,
-                id: id,
+                to,
+                id,
                 created_at,
             });
         }
@@ -824,9 +824,9 @@ pub fn create_big_update(
             let created_at = utils::extract_dt(&d.created_at)?;
 
             big_update.listitems.push(UpdateListItem {
-                from: from,
+                from,
                 to: RecordId::from(("did", to.clone())),
-                id: id,
+                id,
                 created_at,
             });
         }
@@ -834,7 +834,7 @@ pub fn create_big_update(
             let did_key = utils::did_to_key(did.as_str())?;
             let id = format!("{}_{}", rkey.as_str(), did_key);
             let feed = UpdateFeed {
-                id: id,
+                id,
                 author: RecordId::from_table_key("did", did_key),
                 avatar: None, // TODO implement
                 created_at: utils::extract_dt(&d.created_at)?,
@@ -856,7 +856,7 @@ pub fn create_big_update(
             let id = format!("{}_{}", rkey.as_str(), did_key);
 
             let list = UpdateList {
-                id: id,
+                id,
                 name: d.name.clone(),
                 avatar: None, // TODO implement
                 created_at: utils::extract_dt(&d.created_at)?,
@@ -864,7 +864,7 @@ pub fn create_big_update(
                 labels: d
                     .labels
                     .as_ref()
-                    .and_then(|d| utils::extract_self_labels_list(d)),
+                    .and_then(utils::extract_self_labels_list),
                 purpose: d.purpose.clone(),
                 extra_data: process_extra_data(&d.extra_data)?,
             };
@@ -873,29 +873,29 @@ pub fn create_big_update(
         KnownRecord::AppBskyFeedThreadgate(d) => {
             let did_key = utils::did_to_key(did.as_str())?;
             let id = format!("{}_{}", rkey.as_str(), did_key);
-            big_update.threadgates.push(WithId { id: id, data: d });
+            big_update.threadgates.push(WithId { id, data: d });
         }
         KnownRecord::AppBskyGraphStarterpack(d) => {
             let did_key = utils::did_to_key(did.as_str())?;
             let id = format!("{}_{}", rkey.as_str(), did_key);
-            big_update.starterpacks.push(WithId { id: id, data: d });
+            big_update.starterpacks.push(WithId { id, data: d });
         }
         KnownRecord::AppBskyFeedPostgate(d) => {
             let did_key = utils::did_to_key(did.as_str())?;
             let id = format!("{}_{}", rkey.as_str(), did_key);
-            big_update.postgates.push(WithId { id: id, data: d });
+            big_update.postgates.push(WithId { id, data: d });
         }
         KnownRecord::ChatBskyActorDeclaration(d) => {
             let did_key = utils::did_to_key(did.as_str())?;
             let id = format!("{}_{}", rkey.as_str(), did_key);
             big_update
                 .actordeclarations
-                .push(WithId { id: id, data: d });
+                .push(WithId { id, data: d });
         }
         KnownRecord::AppBskyLabelerService(d) => {
             let did_key = utils::did_to_key(did.as_str())?;
             let id = format!("{}_{}", rkey.as_str(), did_key);
-            big_update.labelerservices.push(WithId { id: id, data: d });
+            big_update.labelerservices.push(WithId { id, data: d });
         }
         KnownRecord::AppBskyFeedPost(d) => {
             let did_key = utils::did_to_key(did.as_str())?;
@@ -910,50 +910,47 @@ pub fn create_big_update(
 
             let mut post_images: Vec<atrium_api::app::bsky::embed::images::Image> = vec![];
 
-            match &d.embed {
-                Some(d) => {
-                    match d {
-                        atrium_api::types::Union::Refs(e) => {
-                            match e {
-                          atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedExternalMain(m)=>{
-                            // TODO index preview too
-                            links.push(m.external.uri.clone());
-                          },
-                            atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedImagesMain(m) => {
-                              post_images=m.images.clone();
-                            },
-                            atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedVideoMain(m) => {
-                              video = Some(process_video(m)?);
-                            },
-                            atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedRecordMain(m) => {
-                              record = Some(at_uri_to_record_id(&m.record.uri)?);
-                            },
-                            atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedRecordWithMediaMain(m) => {
-                              record = Some(at_uri_to_record_id(&m.record.record.uri)?);
+            if let Some(d) = &d.embed {
+                match d {
+                    atrium_api::types::Union::Refs(e) => {
+                        match e {
+                      atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedExternalMain(m)=>{
+                        // TODO index preview too
+                        links.push(m.external.uri.clone());
+                      },
+                        atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedImagesMain(m) => {
+                          post_images=m.images.clone();
+                        },
+                        atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedVideoMain(m) => {
+                          video = Some(process_video(m)?);
+                        },
+                        atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedRecordMain(m) => {
+                          record = Some(at_uri_to_record_id(&m.record.uri)?);
+                        },
+                        atrium_api::app::bsky::feed::post::RecordEmbedRefs::AppBskyEmbedRecordWithMediaMain(m) => {
+                          record = Some(at_uri_to_record_id(&m.record.record.uri)?);
 
-                              match &m.media{
-                                atrium_api::types::Union::Refs(r)=>match r{
-                                  atrium_api::app::bsky::embed::record_with_media::MainMediaRefs::AppBskyEmbedExternalMain(m)=>{
-                                    // TODO index preview too
-                                    links.push(m.external.uri.clone());
-                                  }
-                                  atrium_api::app::bsky::embed::record_with_media::MainMediaRefs::AppBskyEmbedImagesMain(m)=>{
-                                    post_images=m.images.clone();
-                                  }
-                                  atrium_api::app::bsky::embed::record_with_media::MainMediaRefs::AppBskyEmbedVideoMain(m)=>{
-
-                                    video = Some(process_video(m)?);
-                                  }
-                                }
-                                atrium_api::types::Union::Unknown(_)=>{}
+                          match &m.media{
+                            atrium_api::types::Union::Refs(r)=>match r{
+                              atrium_api::app::bsky::embed::record_with_media::MainMediaRefs::AppBskyEmbedExternalMain(m)=>{
+                                // TODO index preview too
+                                links.push(m.external.uri.clone());
                               }
-                            },
-                        }
-                        }
-                        atrium_api::types::Union::Unknown(_) => {}
+                              atrium_api::app::bsky::embed::record_with_media::MainMediaRefs::AppBskyEmbedImagesMain(m)=>{
+                                post_images=m.images.clone();
+                              }
+                              atrium_api::app::bsky::embed::record_with_media::MainMediaRefs::AppBskyEmbedVideoMain(m)=>{
+
+                                video = Some(process_video(m)?);
+                              }
+                            }
+                            atrium_api::types::Union::Unknown(_)=>{}
+                          }
+                        },
                     }
+                    }
+                    atrium_api::types::Union::Unknown(_) => {}
                 }
-                None => {}
             };
 
             if !post_images.is_empty() {
@@ -1014,7 +1011,7 @@ pub fn create_big_update(
                     labels: d
                         .labels
                         .as_ref()
-                        .and_then(|d| utils::extract_self_labels_post(d)),
+                        .and_then(utils::extract_self_labels_post),
                     text: d.text.clone(),
                     langs: d
                         .langs
@@ -1030,7 +1027,7 @@ pub fn create_big_update(
                         .as_ref()
                         .map(|r| utils::strong_ref_to_record_id(&r.parent))
                         .transpose()?,
-                    video: video,
+                    video,
                     tags: if tags.is_empty() { None } else { Some(tags) },
                     links: if links.is_empty() { None } else { Some(links) },
                     mentions: if mentions.is_empty() {
@@ -1038,7 +1035,7 @@ pub fn create_big_update(
                     } else {
                         Some(mentions)
                     },
-                    record: record,
+                    record,
                     images: if images.is_empty() {
                         None
                     } else {

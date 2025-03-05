@@ -68,14 +68,14 @@ async fn application_main() -> anyhow::Result<()> {
     let _otel_guard = init_observability().await;
 
     // Connect to the database
-    let db = database::connect(&ARGS.db.first().unwrap())
+    let db = database::connect(ARGS.db.first().unwrap())
         .await
         .context("Failed to connect to the database")?;
 
     // Create tasks
     let metrics_task = export_system_metrics().boxed();
-    let jetstream_task = attach_jetstream((&db).to_owned(), ARGS.certificate.clone()).boxed();
-    let indexer_task = start_full_repo_indexer((&db).to_owned()).boxed_local();
+    let jetstream_task = attach_jetstream(db.to_owned(), ARGS.certificate.clone()).boxed();
+    let indexer_task = start_full_repo_indexer(db.to_owned()).boxed_local();
 
     // Add all tasks to a list
     let mut tasks: FuturesUnordered<Pin<Box<dyn Future<Output = Result<(), anyhow::Error>>>>> =

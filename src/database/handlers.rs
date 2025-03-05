@@ -106,7 +106,7 @@ async fn on_commit_event_delete(
             delete_record(db, "listblock", &id).await?;
         }
         "app.bsky.feed.post" => {
-            for table in vec!["post", "posts", "replies", "replyto", "quotes"] {
+            for table in ["post", "posts", "replies", "replyto", "quotes"] {
                 delete_record(db, table, &id).await?;
             }
         }

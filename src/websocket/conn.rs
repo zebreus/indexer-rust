@@ -54,7 +54,7 @@ pub async fn connect_tls(
     let uri = format!(
         "wss://{}/subscribe?maxMessageSizeBytes=1048576{}",
         host,
-        cursor.map_or_else(|| String::new(), |c| format!("&cursor={}", c))
+        cursor.map_or_else(String::new, |c| format!("&cursor={}", c))
     );
     info!(target: "indexer", "Connecting to {}", uri);
 

@@ -52,9 +52,7 @@ impl<
     type Next = O;
     const NAME: &'static str = "First";
     const FIRST: bool = true;
-    fn run(self) -> impl Future<Output = anyhow::Result<Self::Next>> + Send + Sync + 'static {
-        async move { Ok((self.f)(self.a)) }
-    }
+    async fn run(self) -> anyhow::Result<Self::Next> { Ok((self.f)(self.a)) }
 }
 
 pub fn create_stage<
@@ -67,14 +65,14 @@ pub fn create_stage<
     let next_stage_fn = next_stage::<FirstStage<I, O, F>>();
     let boxedfn = Arc::new(f);
 
-    return move |x| {
+    move |x| {
         let first_stage = FirstStage::<I, O, F> {
             a: x,
             b: PhantomData,
             f: boxedfn.clone(),
         };
-        return (next_stage_fn)(first_stage);
-    };
+        (next_stage_fn)(first_stage)
+    }
 }
 
 pub fn next_stage<FROM: Stage>(
@@ -116,7 +114,7 @@ where
             .with_unit("tasks")
             .build()
     });
-    return |x: FROM| {
+    |x: FROM| {
         async move {
             tokio::task::spawn(async move {
                 // Move from queued to active
@@ -233,11 +231,11 @@ where
                     duration.as_millis() as f64 / 1000.0
                 );
 
-                return Some(result);
+                Some(result)
             })
             .await
             .expect("Failed to spawn task in a pump stage. This is a hard error and means that something is wrong with your system. Maybe go buy a bigger machine or something?")
         }
         .boxed()
-    };
+    }
 }
