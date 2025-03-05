@@ -154,7 +154,7 @@ impl OtelProviders {
     /// The providers will be shutdown automatically when the last reference to this struct is dropped
     pub fn new() -> Self {
         static ALREADY_INITIALIZED: AtomicBool = AtomicBool::new(false);
-        if !ALREADY_INITIALIZED.fetch_and(true, Ordering::SeqCst) {
+        if ALREADY_INITIALIZED.fetch_and(true, Ordering::SeqCst) {
             panic!("OtelProviders::new() called more than once");
         }
 
