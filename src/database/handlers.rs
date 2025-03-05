@@ -11,14 +11,17 @@ use atrium_api::{
 };
 use chrono::Utc;
 use futures::FutureExt;
+use opentelemetry::metrics::{Counter, Histogram};
+use opentelemetry::{global, Key, KeyValue};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use std::future::IntoFuture;
+use std::sync::LazyLock;
 use std::time::Instant;
 use surrealdb::method::Query;
 use surrealdb::Datetime;
 use surrealdb::{engine::any::Any, RecordId, Surreal};
-use tracing::{instrument, span, warn, Instrument, Level};
+use tracing::{debug, instrument, span, trace, warn, Instrument, Level};
 
 use crate::websocket::events::{Commit, Kind};
 
@@ -52,7 +55,7 @@ pub async fn handle_event(db: &Surreal<Any>, event: Kind) -> Result<()> {
                 } => {
                     let big_update =
                         on_commit_event_createorupdate(did, did_key, collection, rkey, record)?;
-                    big_update.apply(db).await?;
+                    big_update.apply(db, "jetstream").await?;
                 }
                 Commit::Delete {
                     rev,
@@ -271,6 +274,176 @@ struct WithId<R: Serialize> {
     data: R,
 }
 
+static QUERY_DURATION_METRIC: LazyLock<Histogram<u64>> = LazyLock::new(|| {
+    global::meter("indexer")
+        .u64_histogram("indexer.database.insert_duration")
+        .with_unit("ms")
+        .with_description("Big update duration")
+        .with_boundaries(vec![
+            0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0,
+            7500.0, 10000.0, 25000.0, 50000.0, 75000.0, 100000.0, 250000.0, 500000.0, 750000.0,
+            1000000.0, 2500000.0,
+        ])
+        .build()
+});
+static INSERTED_ROWS_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    global::meter("indexer")
+        .u64_counter("indexer.database.inserted_elements")
+        .with_unit("rows")
+        .with_description("Inserted or updated rows")
+        .build()
+});
+static INSERTED_SIZE_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    global::meter("indexer")
+        .u64_counter("indexer.database.inserted_bytes")
+        .with_unit("By")
+        .with_description("Inserted or updated bytes (approximation)")
+        .build()
+});
+static TRANSACTIONS_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    global::meter("indexer")
+        .u64_counter("indexer.database.transactions")
+        .with_unit("By")
+        .with_description("Number of transactions")
+        .build()
+});
+
+struct BigUpdateInfoRow {
+    count: u64,
+    size: u64,
+}
+impl core::fmt::Debug for BigUpdateInfoRow {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_map()
+            .entry(&"count", &self.count)
+            .entry(&"mB", &(self.size as f64 / 1024.0 / 1024.0))
+            .finish()
+    }
+}
+
+struct BigUpdateInfo {
+    // Info about individual tables
+    did: BigUpdateInfoRow,
+    follows: BigUpdateInfoRow,
+    latest_backfills: BigUpdateInfoRow,
+    likes: BigUpdateInfoRow,
+    reposts: BigUpdateInfoRow,
+    blocks: BigUpdateInfoRow,
+    listblocks: BigUpdateInfoRow,
+    listitems: BigUpdateInfoRow,
+    feeds: BigUpdateInfoRow,
+    lists: BigUpdateInfoRow,
+    threadgates: BigUpdateInfoRow,
+    starterpacks: BigUpdateInfoRow,
+    postgates: BigUpdateInfoRow,
+    actordeclarations: BigUpdateInfoRow,
+    labelerservices: BigUpdateInfoRow,
+    quotes: BigUpdateInfoRow,
+    posts: BigUpdateInfoRow,
+    replies_relations: BigUpdateInfoRow,
+    reply_to_relations: BigUpdateInfoRow,
+    posts_relations: BigUpdateInfoRow,
+    overwrite_latest_backfills: BigUpdateInfoRow,
+}
+
+impl BigUpdateInfo {
+    fn all_relations(&self) -> BigUpdateInfoRow {
+        BigUpdateInfoRow {
+            count: self.likes.count
+                + self.reposts.count
+                + self.blocks.count
+                + self.listblocks.count
+                + self.listitems.count
+                + self.replies_relations.count
+                + self.reply_to_relations.count
+                + self.posts_relations.count
+                + self.quotes.count
+                + self.follows.count,
+            size: self.likes.size
+                + self.reposts.size
+                + self.blocks.size
+                + self.listblocks.size
+                + self.listitems.size
+                + self.replies_relations.size
+                + self.reply_to_relations.size
+                + self.posts_relations.size
+                + self.quotes.size
+                + self.follows.size,
+        }
+    }
+    fn all_tables(&self) -> BigUpdateInfoRow {
+        BigUpdateInfoRow {
+            count: self.did.count
+                + self.feeds.count
+                + self.lists.count
+                + self.threadgates.count
+                + self.starterpacks.count
+                + self.postgates.count
+                + self.actordeclarations.count
+                + self.labelerservices.count
+                + self.posts.count,
+            size: self.did.size
+                + self.feeds.size
+                + self.lists.size
+                + self.threadgates.size
+                + self.starterpacks.size
+                + self.postgates.size
+                + self.actordeclarations.size
+                + self.labelerservices.size
+                + self.posts.size,
+        }
+    }
+    fn all(&self) -> BigUpdateInfoRow {
+        BigUpdateInfoRow {
+            count: self.all_relations().count + self.all_tables().count,
+            size: self.all_relations().size + self.all_tables().size,
+        }
+    }
+
+    fn record_metrics(&self, source: &str) {
+        INSERTED_ROWS_METRIC.add(
+            self.all().count,
+            &[KeyValue::new("source", source.to_string())],
+        );
+        INSERTED_SIZE_METRIC.add(
+            self.all().size,
+            &[KeyValue::new("source", source.to_string())],
+        );
+        TRANSACTIONS_METRIC.add(1, &[]);
+    }
+}
+
+impl core::fmt::Debug for BigUpdateInfo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_map()
+            .entry(&"did", &self.did)
+            .entry(&"follows", &self.follows)
+            .entry(&"latest_backfills", &self.latest_backfills)
+            .entry(&"likes", &self.likes)
+            .entry(&"reposts", &self.reposts)
+            .entry(&"blocks", &self.blocks)
+            .entry(&"listblocks", &self.listblocks)
+            .entry(&"listitems", &self.listitems)
+            .entry(&"feeds", &self.feeds)
+            .entry(&"lists", &self.lists)
+            .entry(&"threadgates", &self.threadgates)
+            .entry(&"starterpacks", &self.starterpacks)
+            .entry(&"postgates", &self.postgates)
+            .entry(&"actordeclarations", &self.actordeclarations)
+            .entry(&"labelerservices", &self.labelerservices)
+            .entry(&"quotes", &self.quotes)
+            .entry(&"posts", &self.posts)
+            .entry(&"replies_relations", &self.replies_relations)
+            .entry(&"reply_to_relations", &self.reply_to_relations)
+            .entry(&"posts_relations", &self.posts_relations)
+            .entry(
+                &"overwrite_latest_backfills",
+                &self.overwrite_latest_backfills,
+            )
+            .finish()
+    }
+}
+
 #[derive(Default)]
 pub struct BigUpdate {
     /// Insert into did
@@ -332,9 +505,15 @@ impl BigUpdate {
         });
     }
 
-    pub async fn apply(self, db: &Surreal<Any>) -> Result<()> {
-        let format_output = tokio::task::block_in_place(|| format!("{:?}", &self));
-        //TODO: Bundle this into a function
+    /// Apply this update to the database
+    ///
+    /// `source` is a string describing the source of the update, used for metrics
+    pub async fn apply(self, db: &Surreal<Any>, source: &str) -> Result<()> {
+        let start = Instant::now();
+        // Convert the update to a string for logging later
+        let info = tokio::task::block_in_place(|| self.create_info());
+
+        // Create the query string
         let query_string = r#"
             BEGIN;
             INSERT IGNORE INTO did $dids RETURN NONE;
@@ -361,7 +540,7 @@ impl BigUpdate {
             COMMIT;
         "#;
 
-        let before_update = Instant::now();
+        // Create the update query. Does not take that long; ~50ms for 30000 rows
         let update = tokio::task::block_in_place(|| {
             db.query(query_string)
                 .bind(("dids", self.did))
@@ -388,265 +567,207 @@ impl BigUpdate {
                 .into_future()
                 .instrument(span!(Level::INFO, "query"))
         });
-        let duration = before_update.elapsed();
+
+        let preparation_duration = start.elapsed();
         let after_update = Instant::now();
         update.await?;
         let update_duration = after_update.elapsed();
-        eprintln!(
-            "Update creation took {}ms, execution took {}ms; update: {}",
-            duration.as_millis(),
+        QUERY_DURATION_METRIC.record(update_duration.as_millis() as u64, &[]);
+        info.record_metrics(source);
+
+        trace!(
+            "Applied updated: {} elements, {}MB, {:03}ms preparation, {:03}ms applying",
+            info.all().count,
+            info.all().size as f64 / 1024.0 / 1024.0,
+            preparation_duration.as_millis(),
             update_duration.as_millis(),
-            format_output
         );
+        debug!("Detailed infos: {:?}", info);
 
         Ok(())
+    }
+
+    fn create_info(&self) -> BigUpdateInfo {
+        BigUpdateInfo {
+            did: BigUpdateInfoRow {
+                count: self.did.len() as u64,
+                size: self
+                    .did
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            follows: BigUpdateInfoRow {
+                count: self.follows.len() as u64,
+                size: self
+                    .follows
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            latest_backfills: BigUpdateInfoRow {
+                count: self.latest_backfills.len() as u64,
+                size: self
+                    .latest_backfills
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            likes: BigUpdateInfoRow {
+                count: self.likes.len() as u64,
+                size: self
+                    .likes
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            reposts: BigUpdateInfoRow {
+                count: self.reposts.len() as u64,
+                size: self
+                    .reposts
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            blocks: BigUpdateInfoRow {
+                count: self.blocks.len() as u64,
+                size: self
+                    .blocks
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            listblocks: BigUpdateInfoRow {
+                count: self.listblocks.len() as u64,
+                size: self
+                    .listblocks
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            listitems: BigUpdateInfoRow {
+                count: self.listitems.len() as u64,
+                size: self
+                    .listitems
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            feeds: BigUpdateInfoRow {
+                count: self.feeds.len() as u64,
+                size: self
+                    .feeds
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            lists: BigUpdateInfoRow {
+                count: self.lists.len() as u64,
+                size: self
+                    .lists
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            threadgates: BigUpdateInfoRow {
+                count: self.threadgates.len() as u64,
+                size: self
+                    .threadgates
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            starterpacks: BigUpdateInfoRow {
+                count: self.starterpacks.len() as u64,
+                size: self
+                    .starterpacks
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            postgates: BigUpdateInfoRow {
+                count: self.postgates.len() as u64,
+                size: self
+                    .postgates
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            actordeclarations: BigUpdateInfoRow {
+                count: self.actordeclarations.len() as u64,
+                size: self
+                    .actordeclarations
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            labelerservices: BigUpdateInfoRow {
+                count: self.labelerservices.len() as u64,
+                size: self
+                    .labelerservices
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            quotes: BigUpdateInfoRow {
+                count: self.quotes.len() as u64,
+                size: self
+                    .quotes
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            posts: BigUpdateInfoRow {
+                count: self.posts.len() as u64,
+                size: self
+                    .posts
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            replies_relations: BigUpdateInfoRow {
+                count: self.replies_relations.len() as u64,
+                size: self
+                    .replies_relations
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            reply_to_relations: BigUpdateInfoRow {
+                count: self.reply_to_relations.len() as u64,
+                size: self
+                    .reply_to_relations
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            posts_relations: BigUpdateInfoRow {
+                count: self.posts_relations.len() as u64,
+                size: self
+                    .posts_relations
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+            overwrite_latest_backfills: BigUpdateInfoRow {
+                count: self.overwrite_latest_backfills.len() as u64,
+                size: self
+                    .overwrite_latest_backfills
+                    .iter()
+                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
+                    .sum(),
+            },
+        }
     }
 }
 
 impl core::fmt::Debug for BigUpdate {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let did_size = self
-            .did
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let follows_size = self
-            .follows
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let latest_backfills_size = self
-            .latest_backfills
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let likes_size = self
-            .likes
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let reposts_size = self
-            .reposts
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let blocks_size = self
-            .blocks
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let listblocks_size = self
-            .listblocks
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let listitems_size = self
-            .listitems
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let feeds_size = self
-            .feeds
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let lists_size = self
-            .lists
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let threadgates_size = self
-            .threadgates
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let starterpacks_size = self
-            .starterpacks
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let postgates_size = self
-            .postgates
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let actordeclarations_size = self
-            .actordeclarations
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let labelerservices_size = self
-            .labelerservices
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let quotes_size = self
-            .quotes
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let posts_size = self
-            .posts
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let replies_relations_size = self
-            .replies_relations
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let reply_to_relations_size = self
-            .reply_to_relations
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let posts_relations_size = self
-            .posts_relations
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let overwrite_latest_backfills_size = self
-            .overwrite_latest_backfills
-            .iter()
-            .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len())
-            .sum::<usize>();
-        let number_relations = self.follows.len()
-            + self.likes.len()
-            + self.reposts.len()
-            + self.blocks.len()
-            + self.listblocks.len()
-            + self.listitems.len()
-            + self.replies_relations.len()
-            + self.reply_to_relations.len()
-            + self.posts_relations.len()
-            + self.quotes.len();
-        let number_inserts = self.did.len()
-            + self.latest_backfills.len()
-            + self.feeds.len()
-            + self.lists.len()
-            + self.threadgates.len()
-            + self.starterpacks.len()
-            + self.postgates.len()
-            + self.actordeclarations.len()
-            + self.labelerservices.len()
-            + self.posts.len()
-            + self.overwrite_latest_backfills.len();
-        let number_total = number_relations + number_inserts;
-        let size_relations = replies_relations_size
-            + reply_to_relations_size
-            + posts_relations_size
-            + quotes_size
-            + likes_size
-            + reposts_size
-            + blocks_size
-            + listblocks_size
-            + listitems_size;
-        let size_inserts = did_size
-            + latest_backfills_size
-            + feeds_size
-            + lists_size
-            + threadgates_size
-            + starterpacks_size
-            + postgates_size
-            + actordeclarations_size
-            + labelerservices_size
-            + posts_size
-            + overwrite_latest_backfills_size;
-        let size_total = size_relations + size_inserts;
-        f.debug_struct("BigUpdate")
-            .field("updates", &number_total)
-            .field("updates_size_mb", &(size_total as f64 / 1024.0 / 1024.0))
-            .field("number_relations", &number_relations)
-            .field("number_inserts", &number_inserts)
-            .field(
-                "size_relations_mb",
-                &(size_relations as f64 / 1024.0 / 1024.0),
-            )
-            .field("size_inserts_mb", &(size_inserts as f64 / 1024.0 / 1024.0))
-            .field("did", &self.did.len())
-            .field("did_size_mb", &(did_size as f64 / 1024.0 / 1024.0))
-            .field("follows", &self.follows.len())
-            .field("follows_size_mb", &(follows_size as f64 / 1024.0 / 1024.0))
-            .field("latest_backfills", &self.latest_backfills.len())
-            .field(
-                "latest_backfills_size_mb",
-                &(latest_backfills_size as f64 / 1024.0 / 1024.0),
-            )
-            .field("likes", &self.likes.len())
-            .field("likes_size_mb", &(likes_size as f64 / 1024.0 / 1024.0))
-            .field("reposts", &self.reposts.len())
-            .field("reposts_size_mb", &(reposts_size as f64 / 1024.0 / 1024.0))
-            .field("blocks", &self.blocks.len())
-            .field("blocks_size_mb", &(blocks_size as f64 / 1024.0 / 1024.0))
-            .field("listblocks", &self.listblocks.len())
-            .field(
-                "listblocks_size_mb",
-                &(listblocks_size as f64 / 1024.0 / 1024.0),
-            )
-            .field("listitems", &self.listitems.len())
-            .field(
-                "listitems_size_mb",
-                &(listitems_size as f64 / 1024.0 / 1024.0),
-            )
-            .field("feeds", &self.feeds.len())
-            .field("feeds_size_mb", &(feeds_size as f64 / 1024.0 / 1024.0))
-            .field("lists", &self.lists.len())
-            .field("lists_size_mb", &(lists_size as f64 / 1024.0 / 1024.0))
-            .field("threadgates", &self.threadgates.len())
-            .field(
-                "threadgates_size_mb",
-                &(threadgates_size as f64 / 1024.0 / 1024.0),
-            )
-            .field("starterpacks", &self.starterpacks.len())
-            .field(
-                "starterpacks_size_mb",
-                &(starterpacks_size as f64 / 1024.0 / 1024.0),
-            )
-            .field("postgates", &self.postgates.len())
-            .field(
-                "postgates_size_mb",
-                &(postgates_size as f64 / 1024.0 / 1024.0),
-            )
-            .field("actordeclarations", &self.actordeclarations.len())
-            .field(
-                "actordeclarations_size_mb",
-                &(actordeclarations_size as f64 / 1024.0 / 1024.0),
-            )
-            .field("labelerservices", &self.labelerservices.len())
-            .field(
-                "labelerservices_size_mb",
-                &(labelerservices_size as f64 / 1024.0 / 1024.0),
-            )
-            .field("quotes", &self.quotes.len())
-            .field("quotes_size_mb", &(quotes_size as f64 / 1024.0 / 1024.0))
-            .field("posts", &self.posts.len())
-            .field("posts_size_mb", &(posts_size as f64 / 1024.0 / 1024.0))
-            .field("replies_relations", &self.replies_relations.len())
-            .field(
-                "replies_relations_size_mb",
-                &(replies_relations_size as f64 / 1024.0 / 1024.0),
-            )
-            .field("reply_to_relations", &self.reply_to_relations.len())
-            .field(
-                "reply_to_relations_size_mb",
-                &(reply_to_relations_size as f64 / 1024.0 / 1024.0),
-            )
-            .field("posts_relations", &self.posts_relations.len())
-            .field(
-                "posts_relations_size_mb",
-                &(posts_relations_size as f64 / 1024.0 / 1024.0),
-            )
-            .field(
-                "overwrite_latest_backfills",
-                &self.overwrite_latest_backfills.len(),
-            )
-            .field(
-                "overwrite_latest_backfills_size_mb",
-                &(overwrite_latest_backfills_size as f64 / 1024.0 / 1024.0),
-            )
-            .finish()
+        let info = self.create_info();
+        info.fmt(f)
     }
 }
+
 /// If the new commit is a create or update, handle it
 #[instrument(skip(record))]
 pub fn on_commit_event_createorupdate(
