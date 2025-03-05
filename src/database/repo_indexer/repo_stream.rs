@@ -7,14 +7,12 @@ use std::{
 use futures::Stream;
 use serde::Deserialize;
 use surrealdb::{engine::any::Any, Surreal};
-use tracing::info;
 
 use crate::database::utils::unsafe_user_key_to_did;
 
 pub struct RepoStream {
     buffer: VecDeque<String>,
     processed_dids: HashSet<String>,
-    anchor: String,
     db: Surreal<Any>,
     db_future: Option<
         std::pin::Pin<
@@ -30,11 +28,10 @@ struct LatestBackfill {
 }
 
 impl RepoStream {
-    pub fn new(anchor: String, db: Surreal<Any>) -> Self {
+    pub fn new(db: Surreal<Any>) -> Self {
         return Self {
             buffer: VecDeque::new(),
             processed_dids: HashSet::new(),
-            anchor,
             db,
             db_future: None,
         };
@@ -72,7 +69,6 @@ impl Stream for RepoStream {
             }
             eprintln!("RepoStream not ready, fetching more data");
 
-            info!(target: "indexer", "Discovering follows starting from {}", self.anchor);
             if self.db_future.is_none() {
                 self.db_future = Some(
                     self.db

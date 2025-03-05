@@ -3,6 +3,7 @@ use crate::{
     database::{
         definitions::Record,
         handlers::{on_commit_event_createorupdate, BigUpdate},
+        repo_indexer::pipeline::NoNextStage,
     },
 };
 use atrium_api::{
@@ -15,6 +16,7 @@ use serde::Deserialize;
 use serde_ipld_dagcbor::from_reader;
 use std::{
     collections::HashMap,
+    future::Future,
     io::Read,
     string::FromUtf8Error,
     sync::LazyLock,
@@ -23,6 +25,8 @@ use std::{
 use surrealdb::{engine::any::Any, opt::PatchOp, RecordId, Surreal};
 use tokio::task::spawn_blocking;
 use tracing::{info, instrument, span, trace, warn, Level, Span};
+
+use super::pipeline::Stage;
 
 type Cid = ipld_core::cid::Cid;
 
@@ -282,8 +286,6 @@ pub struct WithUpdates {
     now: std::time::Duration,
     pub update: BigUpdate,
 }
-/// Updates have been applied
-pub struct Done {}
 
 pub struct PipelineItem<State> {
     db: Surreal<Any>,
@@ -310,28 +312,156 @@ impl PipelineItem<New> {
     }
 }
 
-impl PipelineItem<New> {
-    #[instrument(skip(self), parent = &self.span)]
-    pub async fn get_service(self) -> anyhow::Result<PipelineItem<WithService>> {
-        let service = get_plc_service(&self.http_client, &self.did).await?;
-        let Some(service) = service else {
-            // TODO: Handle this better, as this is not really an error
-            return Err(anyhow::anyhow!("Failed to get a plc service"));
+impl Stage for PipelineItem<New> {
+    type Output = PipelineItem<WithService>;
+    const NAME: &str = "download_information";
+    // type F = Future<Output = anyhow::Result<Self::Output>> + Send + Sync + 'static;
+
+    fn run(self) -> impl Future<Output = anyhow::Result<Self::Output>> + Send + Sync + 'static {
+        return async {
+            let service = get_plc_service(&self.http_client, &self.did).await?;
+            let Some(service) = service else {
+                // TODO: Handle this better, as this is not really an error
+                return Err(anyhow::anyhow!("Failed to get a plc service"));
+            };
+            Ok(PipelineItem::<WithService> {
+                state: WithService {
+                    service: service,
+                    now: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap(),
+                },
+                db: self.db,
+                http_client: self.http_client,
+                did: self.did,
+                span: self.span,
+            })
         };
-        Ok(PipelineItem::<WithService> {
-            state: WithService {
-                service: service,
-                now: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap(),
-            },
-            db: self.db,
-            http_client: self.http_client,
-            did: self.did,
-            span: self.span,
-        })
     }
 }
+
+impl Stage for PipelineItem<WithService> {
+    type Output = PipelineItem<WithRepo>;
+    const NAME: &str = "download_repo";
+    // type F = Future<Output = anyhow::Result<Self::Output>> + Send + Sync + 'static;
+
+    fn run(self) -> impl Future<Output = anyhow::Result<Self::Output>> + Send + Sync + 'static {
+        return async move {
+            let repo = download_repo(&self.state.service, &self.did).await?;
+            Ok(PipelineItem::<WithRepo> {
+                state: WithRepo {
+                    now: self.state.now,
+                    repo,
+                },
+                db: self.db,
+                http_client: self.http_client,
+                did: self.did,
+                span: self.span,
+            })
+        };
+    }
+}
+
+impl Stage for PipelineItem<WithRepo> {
+    type Output = PipelineItem<WithUpdates>;
+    const NAME: &str = "process_repo";
+    // type F = Future<Output = anyhow::Result<Self::Output>> + Send + Sync + 'static;
+
+    fn run(self) -> impl Future<Output = anyhow::Result<Self::Output>> + Send + Sync + 'static {
+        return async move {
+            // info!("Deserializing repo {}", self.did);
+            let did = self.did.clone();
+            let big_update = spawn_blocking(move || {
+                let files: HashMap<ipld_core::cid::CidGeneric<64>, Vec<u8>> =
+                    deserialize_repo(self.state.repo)?;
+                let updates = files_to_updates_blocking(files)?;
+                let mut big_update = create_big_update(&did, updates)?;
+
+                big_update.add_timestamp(&did, surrealdb::sql::Datetime::from(chrono::Utc::now()));
+                Result::<BigUpdate, anyhow::Error>::Ok(big_update)
+            })
+            .await??;
+
+            Ok(PipelineItem::<WithUpdates> {
+                state: WithUpdates {
+                    now: self.state.now,
+                    update: big_update,
+                },
+                db: self.db,
+                http_client: self.http_client,
+                did: self.did,
+                span: self.span,
+            })
+        };
+    }
+}
+
+impl Stage for PipelineItem<WithUpdates> {
+    type Output = NoNextStage;
+    const NAME: &str = "apply_updates";
+    // type F = Future<Output = anyhow::Result<Self::Output>> + Send + Sync + 'static;
+
+    fn run(self) -> impl Future<Output = anyhow::Result<Self::Output>> + Send + Sync + 'static {
+        return async move {
+            let start = Instant::now();
+
+            if !ARGS.dont_write_when_backfilling.unwrap_or(false) {
+                self.state.update.apply(&self.db).await?;
+            } else {
+                eprintln!("Skipping writing to the database and sleeping instead");
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            let duration = start.elapsed();
+            eprintln!("Big update took {:?}", duration);
+            warn!("Big update took {:?}", duration);
+            // let _: Option<Record> = &self
+            //     .db
+            //     .update(("latest_backfill", did_key.clone()))
+            //     .patch(PatchOp::replace(
+            //         "at",
+            //         surrealdb::sql::Datetime::from(chrono::Utc::now()),
+            //     ))
+            //     .await?;
+            Ok(NoNextStage {})
+        };
+    }
+}
+
+// impl Stage for PipelineItem<Done> {
+//     type Output = PipelineItem<Done>;
+//     const NAME: &str = "done";
+//     // type F = Future<Output = anyhow::Result<Self::Output>> + Send + Sync + 'static;
+
+//     fn run(self) -> impl Future<Output = anyhow::Result<Self::Output>> + Send + Sync + 'static {
+//         return async move {
+//             trace!("Indexed {}", self.did);
+//             Ok(self)
+//         };
+//     }
+// }
+
+// impl PipelineItem<New> {
+//     #[instrument(skip(self), parent = &self.span)]
+//     pub async fn get_service(self) -> anyhow::Result<PipelineItem<WithService>> {
+//         let service = get_plc_service(&self.http_client, &self.did).await?;
+//         let Some(service) = service else {
+//             // TODO: Handle this better, as this is not really an error
+//             return Err(anyhow::anyhow!("Failed to get a plc service"));
+//         };
+//         Ok(PipelineItem::<WithService> {
+//             state: WithService {
+//                 service: service,
+//                 now: std::time::SystemTime::now()
+//                     .duration_since(std::time::UNIX_EPOCH)
+//                     .unwrap(),
+//             },
+//             db: self.db,
+//             http_client: self.http_client,
+//             did: self.did,
+//             span: self.span,
+//         })
+//     }
+// }
 
 impl PipelineItem<WithService> {
     #[instrument(skip(self), parent = &self.span)]
@@ -381,7 +511,7 @@ impl PipelineItem<WithRepo> {
 
 impl PipelineItem<WithUpdates> {
     #[instrument(skip(self), parent = &self.span)]
-    pub async fn apply_updates(self) -> anyhow::Result<PipelineItem<Done>> {
+    pub async fn apply_updates(self) -> anyhow::Result<PipelineItem<NoNextStage>> {
         let start = Instant::now();
 
         if !ARGS.dont_write_when_backfilling.unwrap_or(false) {
@@ -401,8 +531,8 @@ impl PipelineItem<WithUpdates> {
         //         surrealdb::sql::Datetime::from(chrono::Utc::now()),
         //     ))
         //     .await?;
-        Ok(PipelineItem::<Done> {
-            state: Done {},
+        Ok(PipelineItem::<NoNextStage> {
+            state: NoNextStage {},
             db: self.db,
             http_client: self.http_client,
             did: self.did,
@@ -411,7 +541,7 @@ impl PipelineItem<WithUpdates> {
     }
 }
 
-impl PipelineItem<Done> {
+impl PipelineItem<NoNextStage> {
     #[instrument(skip(self), parent = &self.span)]
     pub async fn print_report(self) -> anyhow::Result<()> {
         // TODO: This is only for printing debug stuff
