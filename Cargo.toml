@@ -84,5 +84,6 @@ pumps = "0.0.4"
 [profile.release]
 lto = "thin"
 strip = false
+debug = "full"
 opt-level = 3
 incremental = true
