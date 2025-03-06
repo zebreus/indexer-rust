@@ -1,3 +1,5 @@
+use crate::config::ARGS;
+
 use super::{
     definitions::{
         BskyPost, BskyPostImage, BskyPostMediaAspectRatio, BskyPostVideo, BskyPostVideoBlob,
@@ -16,18 +18,23 @@ use atrium_api::{
     },
 };
 use chrono::Utc;
-use opentelemetry::metrics::{Counter, Histogram};
+use futures::lock::Mutex;
+use opentelemetry::metrics::{Counter, Gauge, Histogram};
 use opentelemetry::{global, KeyValue};
-use serde::Serialize;
+use serde::{de::IgnoredAny, Serialize};
 use serde_with::skip_serializing_none;
-use std::future::IntoFuture;
-use std::sync::LazyLock;
 use std::time::Instant;
+use std::{
+    error,
+    sync::{atomic::Ordering, LazyLock},
+};
+use std::{future::IntoFuture, sync::atomic::AtomicU32};
 use surrealdb::Datetime;
 use surrealdb::{engine::any::Any, RecordId, Surreal};
+use tokio::sync::{Semaphore, SemaphorePermit};
 use tracing::{debug, instrument, span, trace, warn, Instrument, Level};
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct UpdateFollow {
     #[serde(rename = "in")]
     pub from: surrealdb::RecordId,
@@ -38,7 +45,7 @@ struct UpdateFollow {
     pub created_at: surrealdb::Datetime,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct UpdateLike {
     #[serde(rename = "in")]
     pub from: surrealdb::RecordId,
@@ -49,7 +56,7 @@ struct UpdateLike {
     pub created_at: surrealdb::Datetime,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct UpdateRepost {
     #[serde(rename = "in")]
     pub from: surrealdb::RecordId,
@@ -60,7 +67,7 @@ struct UpdateRepost {
     pub created_at: surrealdb::Datetime,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct UpdateBlock {
     #[serde(rename = "in")]
     pub from: surrealdb::RecordId,
@@ -71,7 +78,7 @@ struct UpdateBlock {
     pub created_at: surrealdb::Datetime,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct UpdateListBlock {
     #[serde(rename = "in")]
     pub from: surrealdb::RecordId,
@@ -82,7 +89,7 @@ struct UpdateListBlock {
     pub created_at: surrealdb::Datetime,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct UpdateListItem {
     #[serde(rename = "in")]
     pub from: surrealdb::RecordId,
@@ -94,7 +101,7 @@ struct UpdateListItem {
 }
 
 #[skip_serializing_none]
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct UpdateLatestBackfill {
     of: surrealdb::RecordId,
     id: String,
@@ -102,7 +109,7 @@ struct UpdateLatestBackfill {
 }
 
 /// Database struct for a bluesky profile
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[allow(dead_code)]
 pub struct UpdateDid {
     pub id: String,
@@ -124,7 +131,7 @@ pub struct UpdateDid {
     pub extra_data: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct UpdateFeed {
     pub id: String,
     pub uri: String,
@@ -141,7 +148,7 @@ pub struct UpdateFeed {
     pub extra_data: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct UpdateList {
     pub id: String,
     pub name: String,
@@ -155,7 +162,7 @@ pub struct UpdateList {
     pub extra_data: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct UpdateQuote {
     #[serde(rename = "in")]
     pub from: surrealdb::RecordId,
@@ -164,7 +171,7 @@ struct UpdateQuote {
     pub id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct UpdateRepliesRelation {
     #[serde(rename = "in")]
     pub from: surrealdb::RecordId,
@@ -173,7 +180,7 @@ struct UpdateRepliesRelation {
     pub id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct UpdateReplyToRelation {
     #[serde(rename = "in")]
     pub from: surrealdb::RecordId,
@@ -182,7 +189,7 @@ struct UpdateReplyToRelation {
     pub id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct UpdatePostsRelation {
     #[serde(rename = "in")]
     pub from: surrealdb::RecordId,
@@ -191,7 +198,7 @@ struct UpdatePostsRelation {
     pub id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct WithId<R: Serialize> {
     id: String,
     #[serde(flatten)]
@@ -213,7 +220,7 @@ static QUERY_DURATION_METRIC: LazyLock<Histogram<u64>> = LazyLock::new(|| {
 static INSERTED_ROWS_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
     global::meter("indexer")
         .u64_counter("indexer.database.inserted_elements")
-        .with_unit("rows")
+        .with_unit("{row}")
         .with_description("Inserted or updated rows")
         .build()
 });
@@ -227,8 +234,43 @@ static INSERTED_SIZE_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
 static TRANSACTIONS_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
     global::meter("indexer")
         .u64_counter("indexer.database.transactions")
-        .with_unit("By")
+        .with_unit("{transaction}")
         .with_description("Number of transactions")
+        .build()
+});
+static NEWLY_DISCOVERED_DIDS_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    global::meter("indexer")
+        .u64_counter("indexer.database.newly_discovered_dids")
+        .with_unit("{DID}")
+        .with_description("Number of newly discovered DIDs")
+        .build()
+});
+static FAILED_BIG_UPDATES_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    global::meter("indexer")
+        .u64_counter("indexer.database.failed_big_updates")
+        .with_unit("{update}")
+        .with_description("Number of failed big updates. Should be always 0")
+        .build()
+});
+static TRANSACTION_TICKETS_COST_METRIC: LazyLock<Gauge<u64>> = LazyLock::new(|| {
+    global::meter("indexer")
+        .u64_gauge("indexer.database.transaction_cost")
+        .with_unit("{cost}")
+        .with_description("The current cost of holding a database transaction")
+        .build()
+});
+static TRANSACTION_TICKETS_AVAILABLE_METRIC: LazyLock<Gauge<u64>> = LazyLock::new(|| {
+    global::meter("indexer")
+        .u64_gauge("indexer.database.transaction_cost")
+        .with_unit("{cost}")
+        .with_description("The current cost of holding a database transaction")
+        .build()
+});
+static COLLECTED_UPDATE_SIZE_METRIC: LazyLock<Gauge<u64>> = LazyLock::new(|| {
+    global::meter("indexer")
+        .u64_gauge("indexer.database.collected_update_size")
+        .with_unit("{elements}")
+        .with_description("The current cost of holding a database transaction")
         .build()
 });
 
@@ -368,7 +410,19 @@ impl core::fmt::Debug for BigUpdateInfo {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone)]
+enum UpdateState {
+    /// Update was applied
+    Applied,
+    /// Update was not applied, retry later
+    Retry,
+}
+
+// Accumulates small updates until a big update is triggered
+static SMALL_UPDATE_ACCUMULATOR: LazyLock<Mutex<(usize, BigUpdate)>> =
+    LazyLock::new(|| Mutex::new((0, BigUpdate::default())));
+
+#[derive(Default, Clone)]
 pub struct BigUpdate {
     /// Insert into did
     did: Vec<UpdateDid>,
@@ -429,19 +483,137 @@ impl BigUpdate {
         });
     }
 
+    /// Acquire individual locks for each table
+    async fn acquire_locks(&self) -> Vec<SemaphorePermit> {
+        static PERMITS: LazyLock<usize> = LazyLock::new(|| 1);
+        static DID_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+        static FOLLOWS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+        static LATEST_BACKFILLS_SEMAPHORE: LazyLock<Semaphore> =
+            LazyLock::new(|| Semaphore::new(*PERMITS));
+        static LIKES_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+        static REPOSTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+        static BLOCKS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+        static LISTBLOCKS_SEMAPHORE: LazyLock<Semaphore> =
+            LazyLock::new(|| Semaphore::new(*PERMITS));
+        static LISTITEMS_SEMAPHORE: LazyLock<Semaphore> =
+            LazyLock::new(|| Semaphore::new(*PERMITS));
+        static FEEDS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+        static LISTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+        static THREADGATES_SEMAPHORE: LazyLock<Semaphore> =
+            LazyLock::new(|| Semaphore::new(*PERMITS));
+        static STARTERPACKS_SEMAPHORE: LazyLock<Semaphore> =
+            LazyLock::new(|| Semaphore::new(*PERMITS));
+        static POSTGATES_SEMAPHORE: LazyLock<Semaphore> =
+            LazyLock::new(|| Semaphore::new(*PERMITS));
+        static ACTORDECLARATIONS_SEMAPHORE: LazyLock<Semaphore> =
+            LazyLock::new(|| Semaphore::new(*PERMITS));
+        static LABELERSERVICES_SEMAPHORE: LazyLock<Semaphore> =
+            LazyLock::new(|| Semaphore::new(*PERMITS));
+        static QUOTES_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+        static POSTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+        static REPLIES_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
+            LazyLock::new(|| Semaphore::new(*PERMITS));
+        static REPLY_TO_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
+            LazyLock::new(|| Semaphore::new(*PERMITS));
+        static POSTS_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
+            LazyLock::new(|| Semaphore::new(*PERMITS));
+        static OVERWRITE_LATEST_BACKFILLS_SEMAPHORE: LazyLock<Semaphore> =
+            LazyLock::new(|| Semaphore::new(*PERMITS));
+
+        let mut permits = Vec::new();
+
+        if !self.did.is_empty() {
+            permits.push(DID_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.follows.is_empty() {
+            permits.push(FOLLOWS_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.latest_backfills.is_empty() {
+            permits.push(LATEST_BACKFILLS_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.likes.is_empty() {
+            permits.push(LIKES_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.reposts.is_empty() {
+            permits.push(REPOSTS_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.blocks.is_empty() {
+            permits.push(BLOCKS_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.listblocks.is_empty() {
+            permits.push(LISTBLOCKS_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.listitems.is_empty() {
+            permits.push(LISTITEMS_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.feeds.is_empty() {
+            permits.push(FEEDS_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.lists.is_empty() {
+            permits.push(LISTS_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.threadgates.is_empty() {
+            permits.push(THREADGATES_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.starterpacks.is_empty() {
+            permits.push(STARTERPACKS_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.postgates.is_empty() {
+            permits.push(POSTGATES_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.actordeclarations.is_empty() {
+            permits.push(ACTORDECLARATIONS_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.labelerservices.is_empty() {
+            permits.push(LABELERSERVICES_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.quotes.is_empty() {
+            permits.push(QUOTES_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.posts.is_empty() {
+            permits.push(POSTS_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.replies_relations.is_empty() {
+            permits.push(REPLIES_RELATIONS_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.reply_to_relations.is_empty() {
+            permits.push(REPLY_TO_RELATIONS_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.posts_relations.is_empty() {
+            permits.push(POSTS_RELATIONS_SEMAPHORE.acquire().await.unwrap());
+        }
+        if !self.overwrite_latest_backfills.is_empty() {
+            permits.push(
+                OVERWRITE_LATEST_BACKFILLS_SEMAPHORE
+                    .acquire()
+                    .await
+                    .unwrap(),
+            );
+        }
+
+        permits
+    }
+
     /// Apply this update to the database
     ///
     /// `source` is a string describing the source of the update, used for metrics
-    pub async fn apply(self, db: &Surreal<Any>, source: &str) -> Result<()> {
+    ///
+    /// Apply attempt with a convoluted mechanism to avoid congestion
+    async fn attempt_apply(
+        &mut self,
+        db: &Surreal<Any>,
+        source: &str,
+        info: &BigUpdateInfo,
+    ) -> Result<UpdateState> {
         let start = Instant::now();
         // Convert the update to a string for logging later
-        let info = tokio::task::block_in_place(|| self.create_info());
 
         // Create the query string
+        // `RETURN VALUE none` is used to get empty return values for counting the number of inserted rows
         let query_string = r#"
             BEGIN;
+            INSERT IGNORE INTO latest_backfill $latest_backfills RETURN VALUE none;
             INSERT IGNORE INTO did $dids RETURN NONE;
-            INSERT IGNORE INTO latest_backfill $latest_backfills RETURN NONE;
             INSERT IGNORE INTO feed $feeds RETURN NONE;
             INSERT IGNORE INTO list $lists RETURN NONE;
             INSERT IGNORE INTO lex_app_bsky_feed_threadgate $threadgates RETURN NONE;
@@ -449,7 +621,8 @@ impl BigUpdate {
             INSERT IGNORE INTO lex_app_bsky_feed_postgate $postgates RETURN NONE;
             INSERT IGNORE INTO lex_chat_bsky_actor_declaration $actordeclarations RETURN NONE;
             INSERT IGNORE INTO lex_app_bsky_labeler_service $labelerservices RETURN NONE;
-            INSERT IGNORE INTO posts $posts RETURN NONE;
+            INSERT IGNORE INTO post $posts RETURN NONE;
+            INSERT RELATION INTO posts $posts_relations RETURN NONE;
             INSERT RELATION INTO quotes $quotes RETURN NONE;
             INSERT RELATION INTO like $likes RETURN NONE;
             INSERT RELATION INTO repost $reposts RETURN NONE;
@@ -460,44 +633,128 @@ impl BigUpdate {
             INSERT RELATION INTO quotes $quotes RETURN NONE;
             INSERT RELATION INTO replies $replies_relations RETURN NONE;
             INSERT RELATION INTO follow $follows RETURN NONE;
-            INSERT INTO latest_backfill $overwrite_latest_backfill RETURN NONE;
+            FOR $backfill in $overwrite_latest_backfill {
+                UPSERT type::thing("latest_backfill", $backfill.id) MERGE $backfill;
+            };
             COMMIT;
         "#;
 
         // Create the update query. Does not take that long; ~50ms for 30000 rows
         let update = tokio::task::block_in_place(|| {
             db.query(query_string)
-                .bind(("dids", self.did))
-                .bind(("follows", self.follows))
-                .bind(("latest_backfills", self.latest_backfills))
-                .bind(("likes", self.likes))
-                .bind(("reposts", self.reposts))
-                .bind(("blocks", self.blocks))
-                .bind(("listblocks", self.listblocks))
-                .bind(("listitems", self.listitems))
-                .bind(("feeds", self.feeds))
-                .bind(("lists", self.lists))
-                .bind(("threadgates", self.threadgates))
-                .bind(("starterpacks", self.starterpacks))
-                .bind(("postgates", self.postgates))
-                .bind(("actordeclarations", self.actordeclarations))
-                .bind(("labelerservices", self.labelerservices))
-                .bind(("quotes", self.quotes))
-                .bind(("posts", self.posts))
-                .bind(("replies_relations", self.replies_relations))
-                .bind(("reply_to_relations", self.reply_to_relations))
-                .bind(("posts_relations", self.posts_relations))
-                .bind(("overwrite_latest_backfill", self.overwrite_latest_backfills))
+                .bind(("dids", self.did.clone()))
+                .bind(("follows", self.follows.clone()))
+                .bind(("latest_backfills", self.latest_backfills.clone()))
+                .bind(("likes", self.likes.clone()))
+                .bind(("reposts", self.reposts.clone()))
+                .bind(("blocks", self.blocks.clone()))
+                .bind(("listblocks", self.listblocks.clone()))
+                .bind(("listitems", self.listitems.clone()))
+                .bind(("feeds", self.feeds.clone()))
+                .bind(("lists", self.lists.clone()))
+                .bind(("threadgates", self.threadgates.clone()))
+                .bind(("starterpacks", self.starterpacks.clone()))
+                .bind(("postgates", self.postgates.clone()))
+                .bind(("actordeclarations", self.actordeclarations.clone()))
+                .bind(("labelerservices", self.labelerservices.clone()))
+                .bind(("quotes", self.quotes.clone()))
+                .bind(("posts", self.posts.clone()))
+                .bind(("replies_relations", self.replies_relations.clone()))
+                .bind(("reply_to_relations", self.reply_to_relations.clone()))
+                .bind(("posts_relations", self.posts_relations.clone()))
+                .bind((
+                    "overwrite_latest_backfill",
+                    self.overwrite_latest_backfills.clone(),
+                ))
                 .into_future()
                 .instrument(span!(Level::INFO, "query"))
         });
 
         let preparation_duration = start.elapsed();
         let after_update = Instant::now();
-        update.await?;
+
+        // Minimum cost for a transaction in permits
+        static MIN_COST: u32 = 20;
+        // Maximum cost for a transaction in permits
+        static MAX_COST: LazyLock<u32> =
+            LazyLock::new(|| MIN_COST * ARGS.max_concurrent_transactions);
+        // Semaphore for limiting the number of concurrent transactions by permits
+        static SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| {
+            Semaphore::new(*MAX_COST as usize * ARGS.min_concurrent_transactions as usize)
+        });
+        // The current cost of a transaction in permits
+        static TRANSACTION_COST: AtomicU32 = AtomicU32::new(MIN_COST);
+
+        let base_cost = TRANSACTION_COST.load(Ordering::Relaxed);
+        TRANSACTION_TICKETS_COST_METRIC.record(base_cost as u64, &[]);
+        TRANSACTION_TICKETS_AVAILABLE_METRIC.record(SEMAPHORE.available_permits() as u64, &[]);
+        // A multiplier for transactions that may cause congestion
+        let transaction_cost_multiplier = f64::log10(10.0 + info.all().count as f64).floor() as u32;
+        let transaction_cost = std::cmp::min(*MAX_COST, base_cost * transaction_cost_multiplier);
+        let mut result = {
+            let _permit = SEMAPHORE.acquire_many(transaction_cost).await.unwrap();
+            update.await
+        }?;
+        let errors = result.take_errors();
+
+        // Return retry if the transaction can be retried
+        if errors.len() > 0 {
+            let can_be_retried = errors.iter().any(|(_, e)| {
+                if let surrealdb::Error::Api(surrealdb::error::Api::Query(message)) = e {
+                    message.contains("This transaction can be retried")
+                } else {
+                    false
+                }
+            });
+
+            if can_be_retried {
+                // Raise the cost for each retry
+                TRANSACTION_COST
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
+                        Some(std::cmp::min(*MAX_COST, x * 2))
+                    })
+                    .unwrap();
+
+                warn!("Failed but can be retried");
+                return Ok(UpdateState::Retry);
+            }
+        }
+
+        // Lower the cost for each successful transaction
+        TRANSACTION_COST
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
+                Some(std::cmp::max(MIN_COST, x - 1))
+            })
+            .unwrap();
+        warn!("Cost: {}", TRANSACTION_COST.load(Ordering::Relaxed));
+
         let update_duration = after_update.elapsed();
         QUERY_DURATION_METRIC.record(update_duration.as_millis() as u64, &[]);
+
+        // Return error if there are any errors
+        if errors.len() > 0 {
+            FAILED_BIG_UPDATES_METRIC.add(1, &[]);
+
+            let mut sorted_errors = errors.into_iter().collect::<Vec<_>>();
+            sorted_errors.sort_by(|(a, _), (b, _)| a.cmp(b));
+            for error in &sorted_errors {
+                warn!("Database error: {:?}", error);
+            }
+            let first_error = &sorted_errors.first().unwrap().1;
+            return Err(anyhow::anyhow!("Database error: {:?}", first_error));
+        }
+
+        // At this point, we know that the update was successful
+
+        // Record metrics
         info.record_metrics(source);
+
+        // Record stats about newly discovered DIDs
+        let newly_discovered_dids = result.take::<Vec<IgnoredAny>>(0).unwrap().len();
+        // warn!("Newly discovered DIDs: {}", newly_discovered_dids);
+        if newly_discovered_dids > 0 {
+            NEWLY_DISCOVERED_DIDS_METRIC.add(newly_discovered_dids as u64, &[]);
+        }
 
         trace!(
             "Applied updated: {} elements, {}MB, {:03}ms preparation, {:03}ms applying",
@@ -507,6 +764,199 @@ impl BigUpdate {
             update_duration.as_millis(),
         );
         debug!("Detailed infos: {:?}", info);
+
+        Ok(UpdateState::Applied)
+    }
+
+    // /// apply update with individual locks for each table
+    // async fn attempt_apply(
+    //     &mut self,
+    //     db: &Surreal<Any>,
+    //     source: &str,
+    //     info: &BigUpdateInfo,
+    // ) -> Result<UpdateState> {
+    //     let start = Instant::now();
+    //     // Convert the update to a string for logging later
+
+    //     // Create the query string
+    //     // `RETURN VALUE none` is used to get empty return values for counting the number of inserted rows
+    //     let query_string = r#"
+    //         BEGIN;
+    //         INSERT IGNORE INTO latest_backfill $latest_backfills RETURN VALUE none;
+    //         INSERT IGNORE INTO did $dids RETURN NONE;
+    //         INSERT IGNORE INTO feed $feeds RETURN NONE;
+    //         INSERT IGNORE INTO list $lists RETURN NONE;
+    //         INSERT IGNORE INTO lex_app_bsky_feed_threadgate $threadgates RETURN NONE;
+    //         INSERT IGNORE INTO lex_app_bsky_graph_starterpack $starterpacks RETURN NONE;
+    //         INSERT IGNORE INTO lex_app_bsky_feed_postgate $postgates RETURN NONE;
+    //         INSERT IGNORE INTO lex_chat_bsky_actor_declaration $actordeclarations RETURN NONE;
+    //         INSERT IGNORE INTO lex_app_bsky_labeler_service $labelerservices RETURN NONE;
+    //         INSERT IGNORE INTO post $posts RETURN NONE;
+    //         INSERT RELATION INTO posts $posts_relations RETURN NONE;
+    //         INSERT RELATION INTO quotes $quotes RETURN NONE;
+    //         INSERT RELATION INTO like $likes RETURN NONE;
+    //         INSERT RELATION INTO repost $reposts RETURN NONE;
+    //         INSERT RELATION INTO block $blocks RETURN NONE;
+    //         INSERT RELATION INTO listblock $listblocks RETURN NONE;
+    //         INSERT RELATION INTO listitem $listitems RETURN NONE;
+    //         INSERT RELATION INTO replyto $reply_to_relations RETURN NONE;
+    //         INSERT RELATION INTO quotes $quotes RETURN NONE;
+    //         INSERT RELATION INTO replies $replies_relations RETURN NONE;
+    //         INSERT RELATION INTO follow $follows RETURN NONE;
+    //         FOR $backfill in $overwrite_latest_backfill {
+    //             UPSERT type::thing("latest_backfill", $backfill.id) MERGE $backfill;
+    //         };
+    //         COMMIT;
+    //     "#;
+
+    //     // Create the update query. Does not take that long; ~50ms for 30000 rows
+    //     let update = tokio::task::block_in_place(|| {
+    //         db.query(query_string)
+    //             .bind(("dids", self.did.clone()))
+    //             .bind(("follows", self.follows.clone()))
+    //             .bind(("latest_backfills", self.latest_backfills.clone()))
+    //             .bind(("likes", self.likes.clone()))
+    //             .bind(("reposts", self.reposts.clone()))
+    //             .bind(("blocks", self.blocks.clone()))
+    //             .bind(("listblocks", self.listblocks.clone()))
+    //             .bind(("listitems", self.listitems.clone()))
+    //             .bind(("feeds", self.feeds.clone()))
+    //             .bind(("lists", self.lists.clone()))
+    //             .bind(("threadgates", self.threadgates.clone()))
+    //             .bind(("starterpacks", self.starterpacks.clone()))
+    //             .bind(("postgates", self.postgates.clone()))
+    //             .bind(("actordeclarations", self.actordeclarations.clone()))
+    //             .bind(("labelerservices", self.labelerservices.clone()))
+    //             .bind(("quotes", self.quotes.clone()))
+    //             .bind(("posts", self.posts.clone()))
+    //             .bind(("replies_relations", self.replies_relations.clone()))
+    //             .bind(("reply_to_relations", self.reply_to_relations.clone()))
+    //             .bind(("posts_relations", self.posts_relations.clone()))
+    //             .bind((
+    //                 "overwrite_latest_backfill",
+    //                 self.overwrite_latest_backfills.clone(),
+    //             ))
+    //             .into_future()
+    //             .instrument(span!(Level::INFO, "query"))
+    //     });
+
+    //     let preparation_duration = start.elapsed();
+    //     let after_update = Instant::now();
+
+    //     let mut result = {
+    //         let _permit = self.acquire_locks().await;
+    //         update.await
+    //     }?;
+    //     let errors = result.take_errors();
+
+    //     // Return retry if the transaction can be retried
+    //     if errors.len() > 0 {
+    //         let can_be_retried = errors.iter().any(|(_, e)| {
+    //             if let surrealdb::Error::Api(surrealdb::error::Api::Query(message)) = e {
+    //                 message.contains("This transaction can be retried")
+    //             } else {
+    //                 false
+    //             }
+    //         });
+
+    //         if can_be_retried {
+    //             // Raise the cost for each retry
+    //             panic!("Retry not implemented");
+
+    //             warn!("Failed but can be retried");
+    //             return Ok(UpdateState::Retry);
+    //         }
+    //     }
+
+    //     let update_duration = after_update.elapsed();
+    //     QUERY_DURATION_METRIC.record(update_duration.as_millis() as u64, &[]);
+
+    //     // Return error if there are any errors
+    //     if errors.len() > 0 {
+    //         FAILED_BIG_UPDATES_METRIC.add(1, &[]);
+
+    //         let mut sorted_errors = errors.into_iter().collect::<Vec<_>>();
+    //         sorted_errors.sort_by(|(a, _), (b, _)| a.cmp(b));
+    //         for error in &sorted_errors {
+    //             warn!("Database error: {:?}", error);
+    //         }
+    //         let first_error = &sorted_errors.first().unwrap().1;
+    //         return Err(anyhow::anyhow!("Database error: {:?}", first_error));
+    //     }
+
+    //     // At this point, we know that the update was successful
+
+    //     // Record metrics
+    //     info.record_metrics(source);
+
+    //     // Record stats about newly discovered DIDs
+    //     let newly_discovered_dids = result.take::<Vec<IgnoredAny>>(0).unwrap().len();
+    //     // warn!("Newly discovered DIDs: {}", newly_discovered_dids);
+    //     if newly_discovered_dids > 0 {
+    //         NEWLY_DISCOVERED_DIDS_METRIC.add(newly_discovered_dids as u64, &[]);
+    //     }
+
+    //     trace!(
+    //         "Applied updated: {} elements, {}MB, {:03}ms preparation, {:03}ms applying",
+    //         info.all().count,
+    //         info.all().size as f64 / 1024.0 / 1024.0,
+    //         preparation_duration.as_millis(),
+    //         update_duration.as_millis(),
+    //     );
+    //     debug!("Detailed infos: {:?}", info);
+
+    //     Ok(UpdateState::Applied)
+    // }
+
+    /// Apply this update to the database
+    ///
+    /// `source` is a string describing the source of the update, used for metrics
+    pub async fn apply(self, db: &Surreal<Any>, source: &str) -> Result<()> {
+        // Bundle small updates
+        let (mut update, info) = {
+            let info = tokio::task::block_in_place(|| self.create_info());
+
+            let all = info.all();
+            if all.count < ARGS.min_rows_per_transaction as u64 {
+                // Small update
+                let mut lock = SMALL_UPDATE_ACCUMULATOR.lock().await;
+                let (count, update) = &mut *lock;
+                *count += all.count as usize;
+                COLLECTED_UPDATE_SIZE_METRIC.record(*count as u64, &[]);
+                update.merge(self);
+                if *count < ARGS.min_rows_per_transaction as usize {
+                    return Ok(());
+                }
+                let update = std::mem::replace(update, BigUpdate::default());
+                *count = 0;
+                drop(lock);
+                let info = tokio::task::block_in_place(|| update.create_info());
+
+                (update, info)
+            } else {
+                (self, info)
+            }
+        };
+
+        let mut attempts_left = 100;
+        loop {
+            let state = update.attempt_apply(db, source, &info).await?;
+            match state {
+                UpdateState::Applied => {
+                    break;
+                }
+                UpdateState::Retry => {
+                    warn!("Retrying update {} attempts left", attempts_left);
+                    attempts_left -= 1;
+                    if attempts_left == 0 {
+                        return Err(anyhow::anyhow!("Too many retries"));
+                    }
+                }
+            }
+        }
+        if attempts_left < 100 {
+            warn!("Update successful after {} retries", 100 - attempts_left);
+        }
 
         Ok(())
     }
@@ -861,10 +1311,7 @@ pub fn create_big_update(
                 avatar: None, // TODO implement
                 created_at: utils::extract_dt(&d.created_at)?,
                 description: d.description.clone(),
-                labels: d
-                    .labels
-                    .as_ref()
-                    .and_then(utils::extract_self_labels_list),
+                labels: d.labels.as_ref().and_then(utils::extract_self_labels_list),
                 purpose: d.purpose.clone(),
                 extra_data: process_extra_data(&d.extra_data)?,
             };
@@ -888,9 +1335,7 @@ pub fn create_big_update(
         KnownRecord::ChatBskyActorDeclaration(d) => {
             let did_key = utils::did_to_key(did.as_str())?;
             let id = format!("{}_{}", rkey.as_str(), did_key);
-            big_update
-                .actordeclarations
-                .push(WithId { id, data: d });
+            big_update.actordeclarations.push(WithId { id, data: d });
         }
         KnownRecord::AppBskyLabelerService(d) => {
             let did_key = utils::did_to_key(did.as_str())?;
@@ -1008,10 +1453,7 @@ pub fn create_big_update(
                     bridgy_original_url: None,
                     via: None,
                     created_at: utils::extract_dt(&d.created_at)?,
-                    labels: d
-                        .labels
-                        .as_ref()
-                        .and_then(utils::extract_self_labels_post),
+                    labels: d.labels.as_ref().and_then(utils::extract_self_labels_post),
                     text: d.text.clone(),
                     langs: d
                         .langs

@@ -4,7 +4,7 @@ use surrealdb::{engine::any::Any, Datetime, RecordId, Surreal};
 use tracing::debug;
 
 /// Database struct for a bluesky profile
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[allow(dead_code)]
 pub struct BskyProfile {
     #[serde(rename = "displayName")]
@@ -58,7 +58,7 @@ pub struct JetstreamIdentityEvent {
 }
 
 /// Database struct for a bluesky post
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct BskyPost {
     pub author: RecordId,
     #[serde(rename = "bridgyOriginalUrl")]
@@ -82,7 +82,7 @@ pub struct BskyPost {
 }
 
 /// Database struct for a bluesky post image
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct BskyPostImage {
     pub alt: String,
     pub blob: RecordId,
@@ -91,7 +91,7 @@ pub struct BskyPostImage {
 }
 
 /// Database struct for a bluesky post video
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct BskyPostVideo {
     pub alt: Option<String>,
     #[serde(rename = "aspectRatio")]
@@ -100,10 +100,10 @@ pub struct BskyPostVideo {
     pub captions: Option<Vec<BskyPostVideoCaption>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct BskyPostVideoCaption {}
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct BskyPostVideoBlob {
     pub cid: String,
     #[serde(rename = "mediaType")]
@@ -112,13 +112,13 @@ pub struct BskyPostVideoBlob {
 }
 
 /// Database struct for a bluesky post video aspect ratio
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct BskyPostMediaAspectRatio {
     pub width: u64,
     pub height: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct BskyFeed {
     pub uri: String,
     pub author: RecordId,
@@ -134,7 +134,7 @@ pub struct BskyFeed {
     pub extra_data: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct BskyList {
     pub name: String,
     pub purpose: String,

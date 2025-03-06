@@ -71,6 +71,15 @@ pub struct Args {
     /// Number of DIDs the RepoStream should prefetch
     #[arg(long, default_value = "5000")]
     pub repo_stream_buffer_size: usize,
+    /// Maximum number of concurrent database transactions
+    #[arg(long, default_value = "1")]
+    pub max_concurrent_transactions: u32,
+    /// Minimum number of concurrent database transactions
+    #[arg(long, default_value = "1")]
+    pub min_concurrent_transactions: u32,
+    /// Minimum number of rows per database transaction
+    #[arg(long, default_value = "1000")]
+    pub min_rows_per_transaction: usize,
 }
 
 pub static ARGS: LazyLock<Args> = LazyLock::new(Args::parse);
