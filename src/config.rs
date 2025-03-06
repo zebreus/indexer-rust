@@ -60,7 +60,10 @@ pub struct Args {
     /// Timeout for the repo downloading pipeline stage in seconds.
     /// If this is longer than the pipeline_stage_timeout, the pipeline_stage_timeout will be used
     #[arg(long, default_value = "1000")]
-    pub repo_download_timeout: u64,
+    pub download_repo_timeout: u64,
+    /// The maximum number of times to attempt to download a repo before giving up
+    #[arg(long, default_value = "5")]
+    pub download_repo_attempts: u64,
     /// Timeout for downloading information from the directory in seconds.
     /// If this is longer than the pipeline_stage_timeout, the pipeline_stage_timeout will be used
     #[arg(long, default_value = "200")]

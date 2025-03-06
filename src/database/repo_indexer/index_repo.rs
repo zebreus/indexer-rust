@@ -11,10 +11,11 @@ use atrium_api::{
     types::string::{Did, RecordKey},
 };
 use ipld_core::cid::Cid;
+use opentelemetry::{global, metrics::Counter};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_ipld_dagcbor::from_reader;
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::LazyLock, time::Duration};
 use surrealdb::{engine::any::Any, Surreal};
 use tokio::task::spawn_blocking;
 use tracing::{instrument, span, trace, warn, Level, Span};
@@ -210,6 +211,30 @@ impl Stage for DownloadService {
     }
 }
 
+static DOWNLOAD_REPO_RETRIES: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    global::meter("indexer")
+        .u64_counter("indexer.pipeline.download_repo_retries")
+        .with_unit("{retry}")
+        .with_description("Number of retries for downloading a repo")
+        .build()
+});
+
+async fn attempt_download(
+    client: &Client,
+    url: &str,
+    timeout: Duration,
+) -> anyhow::Result<Vec<u8>> {
+    let get_repo_response = client.get(url).timeout(timeout).send().await?;
+    if !get_repo_response.status().is_success() {
+        return Err(anyhow::anyhow!("Statuscode {}", get_repo_response.status()));
+    }
+    let repo: Vec<u8> = get_repo_response.bytes().await?.into();
+    if repo.is_empty() {
+        return Err(anyhow::anyhow!("Downloaded repo is empty"));
+    }
+    Ok(repo)
+}
+
 impl Stage for DownloadRepo {
     type Next = ProcessRepo;
     const NAME: &str = "download_repo";
@@ -217,17 +242,44 @@ impl Stage for DownloadRepo {
     #[instrument(skip(self), fields(did = self.common.did), parent = self.common.span.clone())]
     async fn run(self) -> anyhow::Result<Self::Next> {
         let retrival_time = surrealdb::sql::Datetime::from(chrono::Utc::now());
-        let get_repo_response = self
-            .common
-            .http_client
-            .get(format!(
-                "{}/xrpc/com.atproto.sync.getRepo?did={}",
-                self.service.service_endpoint, self.common.did,
-            ))
-            .timeout(tokio::time::Duration::from_secs(ARGS.repo_download_timeout))
-            .send()
-            .await?;
-        let repo: Vec<u8> = get_repo_response.bytes().await?.into();
+
+        // Download the repo
+        let mut attempts_left = ARGS.download_repo_attempts;
+        let repo = loop {
+            let get_repo_response = attempt_download(
+                &self.common.http_client,
+                &format!(
+                    "{}/xrpc/com.atproto.sync.getRepo?did={}",
+                    self.service.service_endpoint, self.common.did,
+                ),
+                Duration::from_secs(ARGS.download_repo_timeout),
+            )
+            .await;
+
+            let error = match get_repo_response {
+                Ok(resp) => {
+                    break Ok(resp);
+                }
+                Err(error) => error,
+            };
+
+            attempts_left -= 1;
+            trace!(
+                "Failed to download repo {} with error: {}, Retrying {} more times",
+                self.common.did,
+                error,
+                attempts_left
+            );
+            DOWNLOAD_REPO_RETRIES.add(1, &[]);
+            if attempts_left == 0 {
+                break Err(anyhow::anyhow!(
+                    "Failed to download repo {} after {} attempts",
+                    self.common.did,
+                    ARGS.download_repo_attempts
+                ));
+            }
+        }?;
+
         trace!(
             "Downloaded repo {} with size {:.2} MB",
             self.common.did,
