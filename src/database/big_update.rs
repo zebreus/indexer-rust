@@ -1,11 +1,6 @@
 use crate::config::ARGS;
 
-use super::{
-    definitions::{
-        BskyPost, BskyPostImage, BskyPostMediaAspectRatio, BskyPostVideo, BskyPostVideoBlob,
-    },
-    utils::{self, at_uri_to_record_id, blob_ref_to_record_id, did_to_key},
-};
+use super::utils::{self, at_uri_to_record_id, blob_ref_to_record_id, did_to_key};
 use anyhow::Result;
 use atrium_api::app::bsky::richtext::facet::MainFeaturesItem;
 use atrium_api::types::Object;
@@ -17,193 +12,38 @@ use atrium_api::{
         Blob, BlobRef,
     },
 };
-use chrono::Utc;
-use futures::lock::Mutex;
+use chrono::{DateTime, Utc};
+use futures::{lock::Mutex, FutureExt};
+use info::{BigUpdateInfo, BigUpdateInfoRow};
 use opentelemetry::metrics::{Counter, Gauge, Histogram};
 use opentelemetry::{global, KeyValue};
+use queries::{insert_latest_backfills, insert_latest_backfills_json};
 use serde::{de::IgnoredAny, Serialize};
 use serde_with::skip_serializing_none;
-use std::time::Instant;
+use sqlx::{
+    postgres::PgPoolOptions, prelude::FromRow, query::QueryAs, Executor, PgExecutor, PgPool,
+    Postgres,
+};
 use std::{
     error,
-    sync::{atomic::Ordering, LazyLock},
+    sync::{atomic::Ordering, Arc, LazyLock},
 };
 use std::{future::IntoFuture, sync::atomic::AtomicU32};
+use std::{ops::Deref, time::Instant};
 use surrealdb::Datetime;
 use surrealdb::{engine::any::Any, RecordId, Surreal};
-use tokio::sync::{Semaphore, SemaphorePermit};
+use tokio::sync::{OnceCell, Semaphore, SemaphorePermit};
 use tracing::{debug, instrument, span, trace, warn, Instrument, Level};
+use types::{
+    BskyBlock, BskyDid, BskyFeed, BskyFollow, BskyLatestBackfill, BskyLike, BskyList,
+    BskyListBlock, BskyListItem, BskyPost, BskyPostImage, BskyPostMediaAspectRatio, BskyPostVideo,
+    BskyPostVideoBlob, BskyPostsRelation, BskyQuote, BskyRepliesRelation, BskyReplyToRelation,
+    BskyRepost, WithId,
+};
 
-#[derive(Debug, Serialize, Clone)]
-struct UpdateFollow {
-    #[serde(rename = "in")]
-    pub from: surrealdb::RecordId,
-    #[serde(rename = "out")]
-    pub to: surrealdb::RecordId,
-    pub id: String,
-    #[serde(rename = "createdAt")]
-    pub created_at: surrealdb::Datetime,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct UpdateLike {
-    #[serde(rename = "in")]
-    pub from: surrealdb::RecordId,
-    #[serde(rename = "out")]
-    pub to: surrealdb::RecordId,
-    pub id: String,
-    #[serde(rename = "createdAt")]
-    pub created_at: surrealdb::Datetime,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct UpdateRepost {
-    #[serde(rename = "in")]
-    pub from: surrealdb::RecordId,
-    #[serde(rename = "out")]
-    pub to: surrealdb::RecordId,
-    pub id: String,
-    #[serde(rename = "createdAt")]
-    pub created_at: surrealdb::Datetime,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct UpdateBlock {
-    #[serde(rename = "in")]
-    pub from: surrealdb::RecordId,
-    #[serde(rename = "out")]
-    pub to: surrealdb::RecordId,
-    pub id: String,
-    #[serde(rename = "createdAt")]
-    pub created_at: surrealdb::Datetime,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct UpdateListBlock {
-    #[serde(rename = "in")]
-    pub from: surrealdb::RecordId,
-    #[serde(rename = "out")]
-    pub to: surrealdb::RecordId,
-    pub id: String,
-    #[serde(rename = "createdAt")]
-    pub created_at: surrealdb::Datetime,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct UpdateListItem {
-    #[serde(rename = "in")]
-    pub from: surrealdb::RecordId,
-    #[serde(rename = "out")]
-    pub to: surrealdb::RecordId,
-    pub id: String,
-    #[serde(rename = "createdAt")]
-    pub created_at: surrealdb::Datetime,
-}
-
-#[skip_serializing_none]
-#[derive(Debug, Serialize, Clone)]
-struct UpdateLatestBackfill {
-    of: surrealdb::RecordId,
-    id: String,
-    at: Option<surrealdb::sql::Datetime>,
-}
-
-/// Database struct for a bluesky profile
-#[derive(Debug, Serialize, Clone)]
-#[allow(dead_code)]
-pub struct UpdateDid {
-    pub id: String,
-    #[serde(rename = "displayName")]
-    pub display_name: Option<String>,
-    pub description: Option<String>,
-    pub avatar: Option<RecordId>,
-    pub banner: Option<RecordId>,
-    #[serde(rename = "createdAt")]
-    pub created_at: Option<Datetime>,
-    #[serde(rename = "seenAt")]
-    pub seen_at: Datetime,
-    #[serde(rename = "joinedViaStarterPack")]
-    pub joined_via_starter_pack: Option<RecordId>,
-    pub labels: Option<Vec<String>>,
-    #[serde(rename = "pinnedPost")]
-    pub pinned_post: Option<RecordId>,
-    #[serde(rename = "extraData")]
-    pub extra_data: Option<String>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct UpdateFeed {
-    pub id: String,
-    pub uri: String,
-    pub author: RecordId,
-    pub rkey: String,
-    pub did: String,
-    #[serde(rename = "displayName")]
-    pub display_name: String,
-    pub description: Option<String>,
-    pub avatar: Option<RecordId>,
-    #[serde(rename = "createdAt")]
-    pub created_at: Datetime,
-    #[serde(rename = "extraData")]
-    pub extra_data: Option<String>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct UpdateList {
-    pub id: String,
-    pub name: String,
-    pub purpose: String,
-    #[serde(rename = "createdAt")]
-    pub created_at: Datetime,
-    pub description: Option<String>,
-    pub avatar: Option<RecordId>,
-    pub labels: Option<Vec<String>>,
-    #[serde(rename = "extraData")]
-    pub extra_data: Option<String>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct UpdateQuote {
-    #[serde(rename = "in")]
-    pub from: surrealdb::RecordId,
-    #[serde(rename = "out")]
-    pub to: surrealdb::RecordId,
-    pub id: String,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct UpdateRepliesRelation {
-    #[serde(rename = "in")]
-    pub from: surrealdb::RecordId,
-    #[serde(rename = "out")]
-    pub to: surrealdb::RecordId,
-    pub id: String,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct UpdateReplyToRelation {
-    #[serde(rename = "in")]
-    pub from: surrealdb::RecordId,
-    #[serde(rename = "out")]
-    pub to: surrealdb::RecordId,
-    pub id: String,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct UpdatePostsRelation {
-    #[serde(rename = "in")]
-    pub from: surrealdb::RecordId,
-    #[serde(rename = "out")]
-    pub to: surrealdb::RecordId,
-    pub id: String,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct WithId<R: Serialize> {
-    id: String,
-    #[serde(flatten)]
-    data: R,
-}
+mod info;
+mod queries;
+mod types;
 
 static QUERY_DURATION_METRIC: LazyLock<Histogram<u64>> = LazyLock::new(|| {
     global::meter("indexer")
@@ -274,142 +114,6 @@ static COLLECTED_UPDATE_SIZE_METRIC: LazyLock<Gauge<u64>> = LazyLock::new(|| {
         .build()
 });
 
-struct BigUpdateInfoRow {
-    count: u64,
-    size: u64,
-}
-impl core::fmt::Debug for BigUpdateInfoRow {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_map()
-            .entry(&"count", &self.count)
-            .entry(&"mB", &(self.size as f64 / 1024.0 / 1024.0))
-            .finish()
-    }
-}
-
-struct BigUpdateInfo {
-    // Info about individual tables
-    did: BigUpdateInfoRow,
-    follows: BigUpdateInfoRow,
-    latest_backfills: BigUpdateInfoRow,
-    likes: BigUpdateInfoRow,
-    reposts: BigUpdateInfoRow,
-    blocks: BigUpdateInfoRow,
-    listblocks: BigUpdateInfoRow,
-    listitems: BigUpdateInfoRow,
-    feeds: BigUpdateInfoRow,
-    lists: BigUpdateInfoRow,
-    threadgates: BigUpdateInfoRow,
-    starterpacks: BigUpdateInfoRow,
-    postgates: BigUpdateInfoRow,
-    actordeclarations: BigUpdateInfoRow,
-    labelerservices: BigUpdateInfoRow,
-    quotes: BigUpdateInfoRow,
-    posts: BigUpdateInfoRow,
-    replies_relations: BigUpdateInfoRow,
-    reply_to_relations: BigUpdateInfoRow,
-    posts_relations: BigUpdateInfoRow,
-    overwrite_latest_backfills: BigUpdateInfoRow,
-}
-
-impl BigUpdateInfo {
-    fn all_relations(&self) -> BigUpdateInfoRow {
-        BigUpdateInfoRow {
-            count: self.likes.count
-                + self.reposts.count
-                + self.blocks.count
-                + self.listblocks.count
-                + self.listitems.count
-                + self.replies_relations.count
-                + self.reply_to_relations.count
-                + self.posts_relations.count
-                + self.quotes.count
-                + self.follows.count,
-            size: self.likes.size
-                + self.reposts.size
-                + self.blocks.size
-                + self.listblocks.size
-                + self.listitems.size
-                + self.replies_relations.size
-                + self.reply_to_relations.size
-                + self.posts_relations.size
-                + self.quotes.size
-                + self.follows.size,
-        }
-    }
-    fn all_tables(&self) -> BigUpdateInfoRow {
-        BigUpdateInfoRow {
-            count: self.did.count
-                + self.feeds.count
-                + self.lists.count
-                + self.threadgates.count
-                + self.starterpacks.count
-                + self.postgates.count
-                + self.actordeclarations.count
-                + self.labelerservices.count
-                + self.posts.count,
-            size: self.did.size
-                + self.feeds.size
-                + self.lists.size
-                + self.threadgates.size
-                + self.starterpacks.size
-                + self.postgates.size
-                + self.actordeclarations.size
-                + self.labelerservices.size
-                + self.posts.size,
-        }
-    }
-    fn all(&self) -> BigUpdateInfoRow {
-        BigUpdateInfoRow {
-            count: self.all_relations().count + self.all_tables().count,
-            size: self.all_relations().size + self.all_tables().size,
-        }
-    }
-
-    fn record_metrics(&self, source: &str) {
-        INSERTED_ROWS_METRIC.add(
-            self.all().count,
-            &[KeyValue::new("source", source.to_string())],
-        );
-        INSERTED_SIZE_METRIC.add(
-            self.all().size,
-            &[KeyValue::new("source", source.to_string())],
-        );
-        TRANSACTIONS_METRIC.add(1, &[]);
-    }
-}
-
-impl core::fmt::Debug for BigUpdateInfo {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_map()
-            .entry(&"did", &self.did)
-            .entry(&"follows", &self.follows)
-            .entry(&"latest_backfills", &self.latest_backfills)
-            .entry(&"likes", &self.likes)
-            .entry(&"reposts", &self.reposts)
-            .entry(&"blocks", &self.blocks)
-            .entry(&"listblocks", &self.listblocks)
-            .entry(&"listitems", &self.listitems)
-            .entry(&"feeds", &self.feeds)
-            .entry(&"lists", &self.lists)
-            .entry(&"threadgates", &self.threadgates)
-            .entry(&"starterpacks", &self.starterpacks)
-            .entry(&"postgates", &self.postgates)
-            .entry(&"actordeclarations", &self.actordeclarations)
-            .entry(&"labelerservices", &self.labelerservices)
-            .entry(&"quotes", &self.quotes)
-            .entry(&"posts", &self.posts)
-            .entry(&"replies_relations", &self.replies_relations)
-            .entry(&"reply_to_relations", &self.reply_to_relations)
-            .entry(&"posts_relations", &self.posts_relations)
-            .entry(
-                &"overwrite_latest_backfills",
-                &self.overwrite_latest_backfills,
-            )
-            .finish()
-    }
-}
-
 #[derive(Debug, Clone)]
 enum UpdateState {
     /// Update was applied
@@ -422,33 +126,37 @@ enum UpdateState {
 static SMALL_UPDATE_ACCUMULATOR: LazyLock<Mutex<(usize, BigUpdate)>> =
     LazyLock::new(|| Mutex::new((0, BigUpdate::default())));
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Serialize)]
 pub struct BigUpdate {
     /// Insert into did
-    did: Vec<UpdateDid>,
-    follows: Vec<UpdateFollow>,
-    latest_backfills: Vec<UpdateLatestBackfill>,
+    did: Vec<WithId<BskyDid>>,
+    follows: Vec<WithId<BskyFollow>>,
+    latest_backfills: Vec<WithId<BskyLatestBackfill>>,
     /// Like latest_backfills but overwrites existing records
-    overwrite_latest_backfills: Vec<UpdateLatestBackfill>,
-    likes: Vec<UpdateLike>,
-    reposts: Vec<UpdateRepost>,
-    blocks: Vec<UpdateBlock>,
-    listblocks: Vec<UpdateListBlock>,
-    listitems: Vec<UpdateListItem>,
-    feeds: Vec<UpdateFeed>,
-    lists: Vec<UpdateList>,
+    overwrite_latest_backfills: Vec<WithId<BskyLatestBackfill>>,
+    likes: Vec<WithId<BskyLike>>,
+    reposts: Vec<WithId<BskyRepost>>,
+    blocks: Vec<WithId<BskyBlock>>,
+    listblocks: Vec<WithId<BskyListBlock>>,
+    listitems: Vec<WithId<BskyListItem>>,
+    feeds: Vec<WithId<BskyFeed>>,
+    lists: Vec<WithId<BskyList>>,
     threadgates: Vec<WithId<Box<Object<atrium_api::app::bsky::feed::threadgate::RecordData>>>>,
     starterpacks: Vec<WithId<Box<Object<atrium_api::app::bsky::graph::starterpack::RecordData>>>>,
     postgates: Vec<WithId<Box<Object<atrium_api::app::bsky::feed::postgate::RecordData>>>>,
     actordeclarations:
         Vec<WithId<Box<Object<atrium_api::chat::bsky::actor::declaration::RecordData>>>>,
     labelerservices: Vec<WithId<Box<Object<atrium_api::app::bsky::labeler::service::RecordData>>>>,
-    quotes: Vec<UpdateQuote>,
+    quotes: Vec<WithId<BskyQuote>>,
     posts: Vec<WithId<BskyPost>>,
-    replies_relations: Vec<UpdateRepliesRelation>,
-    reply_to_relations: Vec<UpdateReplyToRelation>,
-    posts_relations: Vec<UpdatePostsRelation>,
+    replies_relations: Vec<WithId<BskyRepliesRelation>>,
+    reply_to_relations: Vec<WithId<BskyReplyToRelation>>,
+    posts_relations: Vec<WithId<BskyPostsRelation>>,
 }
+
+#[derive(FromRow)]
+struct Id {}
+
 impl BigUpdate {
     pub fn merge(&mut self, other: BigUpdate) {
         self.did.extend(other.did);
@@ -475,11 +183,13 @@ impl BigUpdate {
             .extend(other.overwrite_latest_backfills);
     }
 
-    pub fn add_timestamp(&mut self, did: &str, time: surrealdb::sql::Datetime) {
-        self.overwrite_latest_backfills.push(UpdateLatestBackfill {
-            of: RecordId::from(("did", did)),
+    pub fn add_timestamp(&mut self, did: &str, time: DateTime<Utc>) {
+        self.overwrite_latest_backfills.push(WithId {
             id: did.to_string(),
-            at: Some(time),
+            data: BskyLatestBackfill {
+                of: RecordId::from(("did", did)),
+                at: Some(time),
+            },
         });
     }
 
@@ -602,70 +312,91 @@ impl BigUpdate {
     async fn attempt_apply(
         &mut self,
         db: &Surreal<Any>,
+        database: PgPool,
         source: &str,
         info: &BigUpdateInfo,
     ) -> Result<UpdateState> {
         let start = Instant::now();
         // Convert the update to a string for logging later
+        let cloned = self.clone();
+        tokio::task::spawn(async move {
+            // let pg = &*POOL;
+            // pg.clo
+            // let a = sqlx::query("SELECT * FROM my_table LIMIT 1")
+            //     .fetch_one(&database)
+            //     .await;
+            // tracing::error!("Error: {:?}", a);
+            insert_latest_backfills_json(&cloned.latest_backfills, &database)
+                .await
+                .unwrap();
+            // insert_latest_backfills(&cloned.latest_backfills, &database)
+            //     .await
+            //     .unwrap();
+        })
+        .await?;
+        // tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        // let pg2 = pg;
+
+        // sqlx::query("SELECT 1").fetch_one(&*POOL).await?;
 
         // Create the query string
         // `RETURN VALUE none` is used to get empty return values for counting the number of inserted rows
         let query_string = r#"
             BEGIN;
-            INSERT IGNORE INTO latest_backfill $latest_backfills RETURN VALUE none;
-            INSERT IGNORE INTO did $dids RETURN NONE;
-            INSERT IGNORE INTO feed $feeds RETURN NONE;
-            INSERT IGNORE INTO list $lists RETURN NONE;
-            INSERT IGNORE INTO lex_app_bsky_feed_threadgate $threadgates RETURN NONE;
-            INSERT IGNORE INTO lex_app_bsky_graph_starterpack $starterpacks RETURN NONE;
-            INSERT IGNORE INTO lex_app_bsky_feed_postgate $postgates RETURN NONE;
-            INSERT IGNORE INTO lex_chat_bsky_actor_declaration $actordeclarations RETURN NONE;
-            INSERT IGNORE INTO lex_app_bsky_labeler_service $labelerservices RETURN NONE;
-            INSERT IGNORE INTO post $posts RETURN NONE;
-            INSERT RELATION INTO posts $posts_relations RETURN NONE;
-            INSERT RELATION INTO quotes $quotes RETURN NONE;
-            INSERT RELATION INTO like $likes RETURN NONE;
-            INSERT RELATION INTO repost $reposts RETURN NONE;
-            INSERT RELATION INTO block $blocks RETURN NONE;
-            INSERT RELATION INTO listblock $listblocks RETURN NONE;
-            INSERT RELATION INTO listitem $listitems RETURN NONE;
-            INSERT RELATION INTO replyto $reply_to_relations RETURN NONE;
-            INSERT RELATION INTO quotes $quotes RETURN NONE;
-            INSERT RELATION INTO replies $replies_relations RETURN NONE;
-            INSERT RELATION INTO follow $follows RETURN NONE;
-            FOR $backfill in $overwrite_latest_backfill {
-                UPSERT type::thing("latest_backfill", $backfill.id) MERGE $backfill;
-            };
+            // INSERT IGNORE INTO latest_backfill $latest_backfills RETURN VALUE none;
+            // INSERT IGNORE INTO did $dids RETURN NONE;
+            // INSERT IGNORE INTO feed $feeds RETURN NONE;
+            // INSERT IGNORE INTO list $lists RETURN NONE;
+            // INSERT IGNORE INTO lex_app_bsky_feed_threadgate $threadgates RETURN NONE;
+            // INSERT IGNORE INTO lex_app_bsky_graph_starterpack $starterpacks RETURN NONE;
+            // INSERT IGNORE INTO lex_app_bsky_feed_postgate $postgates RETURN NONE;
+            // INSERT IGNORE INTO lex_chat_bsky_actor_declaration $actordeclarations RETURN NONE;
+            // INSERT IGNORE INTO lex_app_bsky_labeler_service $labelerservices RETURN NONE;
+            // INSERT IGNORE INTO post $posts RETURN NONE;
+            // INSERT RELATION INTO posts $posts_relations RETURN NONE;
+            // INSERT RELATION INTO quotes $quotes RETURN NONE;
+            // INSERT RELATION INTO like $likes RETURN NONE;
+            // INSERT RELATION INTO repost $reposts RETURN NONE;
+            // INSERT RELATION INTO block $blocks RETURN NONE;
+            // INSERT RELATION INTO listblock $listblocks RETURN NONE;
+            // INSERT RELATION INTO listitem $listitems RETURN NONE;
+            // INSERT RELATION INTO replyto $reply_to_relations RETURN NONE;
+            // INSERT RELATION INTO quotes $quotes RETURN NONE;
+            // INSERT RELATION INTO replies $replies_relations RETURN NONE;
+            // INSERT RELATION INTO follow $follows RETURN NONE;
+            // FOR $backfill in $overwrite_latest_backfill {
+            //     UPSERT type::thing("latest_backfill", $backfill.id) MERGE $backfill;
+            // };
             COMMIT;
         "#;
 
         // Create the update query. Does not take that long; ~50ms for 30000 rows
         let update = tokio::task::block_in_place(|| {
             db.query(query_string)
-                .bind(("dids", self.did.clone()))
-                .bind(("follows", self.follows.clone()))
-                .bind(("latest_backfills", self.latest_backfills.clone()))
-                .bind(("likes", self.likes.clone()))
-                .bind(("reposts", self.reposts.clone()))
-                .bind(("blocks", self.blocks.clone()))
-                .bind(("listblocks", self.listblocks.clone()))
-                .bind(("listitems", self.listitems.clone()))
-                .bind(("feeds", self.feeds.clone()))
-                .bind(("lists", self.lists.clone()))
-                .bind(("threadgates", self.threadgates.clone()))
-                .bind(("starterpacks", self.starterpacks.clone()))
-                .bind(("postgates", self.postgates.clone()))
-                .bind(("actordeclarations", self.actordeclarations.clone()))
-                .bind(("labelerservices", self.labelerservices.clone()))
-                .bind(("quotes", self.quotes.clone()))
-                .bind(("posts", self.posts.clone()))
-                .bind(("replies_relations", self.replies_relations.clone()))
-                .bind(("reply_to_relations", self.reply_to_relations.clone()))
-                .bind(("posts_relations", self.posts_relations.clone()))
-                .bind((
-                    "overwrite_latest_backfill",
-                    self.overwrite_latest_backfills.clone(),
-                ))
+                // .bind(("dids", self.did.clone()))
+                // .bind(("follows", self.follows.clone()))
+                // .bind(("latest_backfills", self.latest_backfills.clone()))
+                // .bind(("likes", self.likes.clone()))
+                // .bind(("reposts", self.reposts.clone()))
+                // .bind(("blocks", self.blocks.clone()))
+                // .bind(("listblocks", self.listblocks.clone()))
+                // .bind(("listitems", self.listitems.clone()))
+                // .bind(("feeds", self.feeds.clone()))
+                // .bind(("lists", self.lists.clone()))
+                // .bind(("threadgates", self.threadgates.clone()))
+                // .bind(("starterpacks", self.starterpacks.clone()))
+                // .bind(("postgates", self.postgates.clone()))
+                // .bind(("actordeclarations", self.actordeclarations.clone()))
+                // .bind(("labelerservices", self.labelerservices.clone()))
+                // .bind(("quotes", self.quotes.clone()))
+                // .bind(("posts", self.posts.clone()))
+                // .bind(("replies_relations", self.replies_relations.clone()))
+                // .bind(("reply_to_relations", self.reply_to_relations.clone()))
+                // .bind(("posts_relations", self.posts_relations.clone()))
+                // .bind((
+                //     "overwrite_latest_backfill",
+                //     self.overwrite_latest_backfills.clone(),
+                // ))
                 .into_future()
                 .instrument(span!(Level::INFO, "query"))
         });
@@ -763,10 +494,184 @@ impl BigUpdate {
             preparation_duration.as_millis(),
             update_duration.as_millis(),
         );
-        debug!("Detailed infos: {:?}", info);
+        // debug!("Detailed infos: {:?}", info);
 
         Ok(UpdateState::Applied)
     }
+
+    // /// Apply this update to the database
+    // ///
+    // /// `source` is a string describing the source of the update, used for metrics
+    // ///
+    // /// Apply attempt with a convoluted mechanism to avoid congestion
+    // async fn attempt_apply(
+    //     &mut self,
+    //     db: &Surreal<Any>,
+    //     source: &str,
+    //     info: &BigUpdateInfo,
+    // ) -> Result<UpdateState> {
+    //     let start = Instant::now();
+    //     // Convert the update to a string for logging later
+
+    //     // Create the query string
+    //     // `RETURN VALUE none` is used to get empty return values for counting the number of inserted rows
+    //     let query_string = r#"
+    //         BEGIN;
+    //         INSERT IGNORE INTO latest_backfill $latest_backfills RETURN VALUE none;
+    //         INSERT IGNORE INTO did $dids RETURN NONE;
+    //         INSERT IGNORE INTO feed $feeds RETURN NONE;
+    //         INSERT IGNORE INTO list $lists RETURN NONE;
+    //         INSERT IGNORE INTO lex_app_bsky_feed_threadgate $threadgates RETURN NONE;
+    //         INSERT IGNORE INTO lex_app_bsky_graph_starterpack $starterpacks RETURN NONE;
+    //         INSERT IGNORE INTO lex_app_bsky_feed_postgate $postgates RETURN NONE;
+    //         INSERT IGNORE INTO lex_chat_bsky_actor_declaration $actordeclarations RETURN NONE;
+    //         INSERT IGNORE INTO lex_app_bsky_labeler_service $labelerservices RETURN NONE;
+    //         INSERT IGNORE INTO post $posts RETURN NONE;
+    //         INSERT RELATION INTO posts $posts_relations RETURN NONE;
+    //         INSERT RELATION INTO quotes $quotes RETURN NONE;
+    //         INSERT RELATION INTO like $likes RETURN NONE;
+    //         INSERT RELATION INTO repost $reposts RETURN NONE;
+    //         INSERT RELATION INTO block $blocks RETURN NONE;
+    //         INSERT RELATION INTO listblock $listblocks RETURN NONE;
+    //         INSERT RELATION INTO listitem $listitems RETURN NONE;
+    //         INSERT RELATION INTO replyto $reply_to_relations RETURN NONE;
+    //         INSERT RELATION INTO quotes $quotes RETURN NONE;
+    //         INSERT RELATION INTO replies $replies_relations RETURN NONE;
+    //         INSERT RELATION INTO follow $follows RETURN NONE;
+    //         FOR $backfill in $overwrite_latest_backfill {
+    //             UPSERT type::thing("latest_backfill", $backfill.id) MERGE $backfill;
+    //         };
+    //         COMMIT;
+    //     "#;
+
+    //     // Create the update query. Does not take that long; ~50ms for 30000 rows
+    //     let update = tokio::task::block_in_place(|| {
+    //         db.query(query_string)
+    //             .bind(("dids", self.did.clone()))
+    //             .bind(("follows", self.follows.clone()))
+    //             .bind(("latest_backfills", self.latest_backfills.clone()))
+    //             .bind(("likes", self.likes.clone()))
+    //             .bind(("reposts", self.reposts.clone()))
+    //             .bind(("blocks", self.blocks.clone()))
+    //             .bind(("listblocks", self.listblocks.clone()))
+    //             .bind(("listitems", self.listitems.clone()))
+    //             .bind(("feeds", self.feeds.clone()))
+    //             .bind(("lists", self.lists.clone()))
+    //             .bind(("threadgates", self.threadgates.clone()))
+    //             .bind(("starterpacks", self.starterpacks.clone()))
+    //             .bind(("postgates", self.postgates.clone()))
+    //             .bind(("actordeclarations", self.actordeclarations.clone()))
+    //             .bind(("labelerservices", self.labelerservices.clone()))
+    //             .bind(("quotes", self.quotes.clone()))
+    //             .bind(("posts", self.posts.clone()))
+    //             .bind(("replies_relations", self.replies_relations.clone()))
+    //             .bind(("reply_to_relations", self.reply_to_relations.clone()))
+    //             .bind(("posts_relations", self.posts_relations.clone()))
+    //             .bind((
+    //                 "overwrite_latest_backfill",
+    //                 self.overwrite_latest_backfills.clone(),
+    //             ))
+    //             .into_future()
+    //             .instrument(span!(Level::INFO, "query"))
+    //     });
+
+    //     let preparation_duration = start.elapsed();
+    //     let after_update = Instant::now();
+
+    //     // Minimum cost for a transaction in permits
+    //     static MIN_COST: u32 = 20;
+    //     // Maximum cost for a transaction in permits
+    //     static MAX_COST: LazyLock<u32> =
+    //         LazyLock::new(|| MIN_COST * ARGS.max_concurrent_transactions);
+    //     // Semaphore for limiting the number of concurrent transactions by permits
+    //     static SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| {
+    //         Semaphore::new(*MAX_COST as usize * ARGS.min_concurrent_transactions as usize)
+    //     });
+    //     // The current cost of a transaction in permits
+    //     static TRANSACTION_COST: AtomicU32 = AtomicU32::new(MIN_COST);
+
+    //     let base_cost = TRANSACTION_COST.load(Ordering::Relaxed);
+    //     TRANSACTION_TICKETS_COST_METRIC.record(base_cost as u64, &[]);
+    //     TRANSACTION_TICKETS_AVAILABLE_METRIC.record(SEMAPHORE.available_permits() as u64, &[]);
+    //     // A multiplier for transactions that may cause congestion
+    //     let transaction_cost_multiplier = f64::log10(10.0 + info.all().count as f64).floor() as u32;
+    //     let transaction_cost = std::cmp::min(*MAX_COST, base_cost * transaction_cost_multiplier);
+    //     let mut result = {
+    //         let _permit = SEMAPHORE.acquire_many(transaction_cost).await.unwrap();
+    //         update.await
+    //     }?;
+    //     let errors = result.take_errors();
+
+    //     // Return retry if the transaction can be retried
+    //     if errors.len() > 0 {
+    //         let can_be_retried = errors.iter().any(|(_, e)| {
+    //             if let surrealdb::Error::Api(surrealdb::error::Api::Query(message)) = e {
+    //                 message.contains("This transaction can be retried")
+    //             } else {
+    //                 false
+    //             }
+    //         });
+
+    //         if can_be_retried {
+    //             // Raise the cost for each retry
+    //             TRANSACTION_COST
+    //                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
+    //                     Some(std::cmp::min(*MAX_COST, x * 2))
+    //                 })
+    //                 .unwrap();
+
+    //             warn!("Failed but can be retried");
+    //             return Ok(UpdateState::Retry);
+    //         }
+    //     }
+
+    //     // Lower the cost for each successful transaction
+    //     TRANSACTION_COST
+    //         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
+    //             Some(std::cmp::max(MIN_COST, x - 1))
+    //         })
+    //         .unwrap();
+    //     warn!("Cost: {}", TRANSACTION_COST.load(Ordering::Relaxed));
+
+    //     let update_duration = after_update.elapsed();
+    //     QUERY_DURATION_METRIC.record(update_duration.as_millis() as u64, &[]);
+
+    //     // Return error if there are any errors
+    //     if errors.len() > 0 {
+    //         FAILED_BIG_UPDATES_METRIC.add(1, &[]);
+
+    //         let mut sorted_errors = errors.into_iter().collect::<Vec<_>>();
+    //         sorted_errors.sort_by(|(a, _), (b, _)| a.cmp(b));
+    //         for error in &sorted_errors {
+    //             warn!("Database error: {:?}", error);
+    //         }
+    //         let first_error = &sorted_errors.first().unwrap().1;
+    //         return Err(anyhow::anyhow!("Database error: {:?}", first_error));
+    //     }
+
+    //     // At this point, we know that the update was successful
+
+    //     // Record metrics
+    //     info.record_metrics(source);
+
+    //     // Record stats about newly discovered DIDs
+    //     let newly_discovered_dids = result.take::<Vec<IgnoredAny>>(0).unwrap().len();
+    //     // warn!("Newly discovered DIDs: {}", newly_discovered_dids);
+    //     if newly_discovered_dids > 0 {
+    //         NEWLY_DISCOVERED_DIDS_METRIC.add(newly_discovered_dids as u64, &[]);
+    //     }
+
+    //     trace!(
+    //         "Applied updated: {} elements, {}MB, {:03}ms preparation, {:03}ms applying",
+    //         info.all().count,
+    //         info.all().size as f64 / 1024.0 / 1024.0,
+    //         preparation_duration.as_millis(),
+    //         update_duration.as_millis(),
+    //     );
+    //     debug!("Detailed infos: {:?}", info);
+
+    //     Ok(UpdateState::Applied)
+    // }
 
     // /// apply update with individual locks for each table
     // async fn attempt_apply(
@@ -911,10 +816,10 @@ impl BigUpdate {
     /// Apply this update to the database
     ///
     /// `source` is a string describing the source of the update, used for metrics
-    pub async fn apply(self, db: &Surreal<Any>, source: &str) -> Result<()> {
+    pub async fn apply(self, db: &Surreal<Any>, database: PgPool, source: &str) -> Result<()> {
         // Bundle small updates
         let (mut update, info) = {
-            let info = tokio::task::block_in_place(|| self.create_info());
+            let info = tokio::task::block_in_place(|| BigUpdateInfo::new(&self));
 
             let all = info.all();
             if all.count < ARGS.min_rows_per_transaction as u64 {
@@ -930,7 +835,7 @@ impl BigUpdate {
                 let update = std::mem::replace(update, BigUpdate::default());
                 *count = 0;
                 drop(lock);
-                let info = tokio::task::block_in_place(|| update.create_info());
+                let info = tokio::task::block_in_place(|| BigUpdateInfo::new(&update));
 
                 (update, info)
             } else {
@@ -940,7 +845,9 @@ impl BigUpdate {
 
         let mut attempts_left = 100;
         loop {
-            let state = update.attempt_apply(db, source, &info).await?;
+            let state = update
+                .attempt_apply(db, database.clone(), source, &info)
+                .await?;
             match state {
                 UpdateState::Applied => {
                     break;
@@ -960,184 +867,11 @@ impl BigUpdate {
 
         Ok(())
     }
-
-    fn create_info(&self) -> BigUpdateInfo {
-        BigUpdateInfo {
-            did: BigUpdateInfoRow {
-                count: self.did.len() as u64,
-                size: self
-                    .did
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            follows: BigUpdateInfoRow {
-                count: self.follows.len() as u64,
-                size: self
-                    .follows
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            latest_backfills: BigUpdateInfoRow {
-                count: self.latest_backfills.len() as u64,
-                size: self
-                    .latest_backfills
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            likes: BigUpdateInfoRow {
-                count: self.likes.len() as u64,
-                size: self
-                    .likes
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            reposts: BigUpdateInfoRow {
-                count: self.reposts.len() as u64,
-                size: self
-                    .reposts
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            blocks: BigUpdateInfoRow {
-                count: self.blocks.len() as u64,
-                size: self
-                    .blocks
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            listblocks: BigUpdateInfoRow {
-                count: self.listblocks.len() as u64,
-                size: self
-                    .listblocks
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            listitems: BigUpdateInfoRow {
-                count: self.listitems.len() as u64,
-                size: self
-                    .listitems
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            feeds: BigUpdateInfoRow {
-                count: self.feeds.len() as u64,
-                size: self
-                    .feeds
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            lists: BigUpdateInfoRow {
-                count: self.lists.len() as u64,
-                size: self
-                    .lists
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            threadgates: BigUpdateInfoRow {
-                count: self.threadgates.len() as u64,
-                size: self
-                    .threadgates
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            starterpacks: BigUpdateInfoRow {
-                count: self.starterpacks.len() as u64,
-                size: self
-                    .starterpacks
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            postgates: BigUpdateInfoRow {
-                count: self.postgates.len() as u64,
-                size: self
-                    .postgates
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            actordeclarations: BigUpdateInfoRow {
-                count: self.actordeclarations.len() as u64,
-                size: self
-                    .actordeclarations
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            labelerservices: BigUpdateInfoRow {
-                count: self.labelerservices.len() as u64,
-                size: self
-                    .labelerservices
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            quotes: BigUpdateInfoRow {
-                count: self.quotes.len() as u64,
-                size: self
-                    .quotes
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            posts: BigUpdateInfoRow {
-                count: self.posts.len() as u64,
-                size: self
-                    .posts
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            replies_relations: BigUpdateInfoRow {
-                count: self.replies_relations.len() as u64,
-                size: self
-                    .replies_relations
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            reply_to_relations: BigUpdateInfoRow {
-                count: self.reply_to_relations.len() as u64,
-                size: self
-                    .reply_to_relations
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            posts_relations: BigUpdateInfoRow {
-                count: self.posts_relations.len() as u64,
-                size: self
-                    .posts_relations
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-            overwrite_latest_backfills: BigUpdateInfoRow {
-                count: self.overwrite_latest_backfills.len() as u64,
-                size: self
-                    .overwrite_latest_backfills
-                    .iter()
-                    .map(|e| serde_ipld_dagcbor::to_vec(e).unwrap().len() as u64)
-                    .sum(),
-            },
-        }
-    }
 }
 
 impl core::fmt::Debug for BigUpdate {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let info = self.create_info();
+        let info = BigUpdateInfo::new(self);
         info.fmt(f)
     }
 }
@@ -1160,31 +894,34 @@ pub fn create_big_update(
             // NOTE: using .ok() here isn't optimal, incorrect data should
             // probably not be entered into the database at all, but for now
             // we'll just ignore it.
-            let profile = UpdateDid {
+            let profile = WithId {
                 id: did_key.clone(),
-                display_name: d.display_name.clone(),
-                description: d.description.clone(),
-                avatar: None, // TODO Implement
-                banner: None, // TODO Implement
-                created_at: d
-                    .created_at
-                    .as_ref()
-                    .and_then(|dt| utils::extract_dt(dt).ok()),
-                seen_at: Utc::now().into(),
-                joined_via_starter_pack: d
-                    .joined_via_starter_pack
-                    .as_ref()
-                    .and_then(|d| utils::strong_ref_to_record_id(d).ok()),
-                // TODO if strong_ref_to_record_id fails, it should return an error result instead of being empty
-                pinned_post: d
-                    .pinned_post
-                    .as_ref()
-                    .and_then(|d| utils::strong_ref_to_record_id(d).ok()),
-                labels: d
-                    .labels
-                    .as_ref()
-                    .and_then(utils::extract_self_labels_profile),
-                extra_data: process_extra_data(&d.extra_data)?,
+                data: BskyDid {
+                    display_name: d.display_name.clone(),
+                    description: d.description.clone(),
+                    avatar: None, // TODO Implement
+                    banner: None, // TODO Implement
+                    created_at: d
+                        .created_at
+                        .as_ref()
+                        .and_then(|dt| Some(dt.as_ref().to_utc())),
+                    seen_at: Utc::now().into(),
+                    joined_via_starter_pack: d
+                        .joined_via_starter_pack
+                        .as_ref()
+                        .and_then(|d| utils::strong_ref_to_record_id(d).ok()),
+                    // TODO if strong_ref_to_record_id fails, it should return an error result instead of being empty
+                    pinned_post: d
+                        .pinned_post
+                        .as_ref()
+                        .and_then(|d| utils::strong_ref_to_record_id(d).ok()),
+                    labels: d
+                        .labels
+                        .as_ref()
+                        .map(utils::extract_self_labels_profile)
+                        .unwrap_or_default(),
+                    extra_data: process_extra_data(&d.extra_data)?,
+                },
             };
             big_update.did.push(profile);
         }
@@ -1193,19 +930,23 @@ pub fn create_big_update(
             let from = utils::did_to_key(did.as_str())?;
             let id = format!("{}_{}", rkey.as_str(), from);
             let to = utils::did_to_key(d.subject.as_str())?;
-            let created_at = utils::extract_dt(&d.created_at)?;
+            let created_at = d.created_at.as_ref().to_utc();
 
-            big_update.follows.push(UpdateFollow {
-                from: RecordId::from(("did", from)),
-                to: RecordId::from(("did", to.clone())),
+            big_update.follows.push(WithId {
                 id,
-                created_at,
+                data: BskyFollow {
+                    from: RecordId::from(("did", from)),
+                    to: RecordId::from(("did", to.clone())),
+                    created_at,
+                },
             });
 
-            big_update.latest_backfills.push(UpdateLatestBackfill {
-                of: RecordId::from(("did", to.clone())),
-                id: to,
-                at: None,
+            big_update.latest_backfills.push(WithId {
+                id: to.clone(),
+                data: BskyLatestBackfill {
+                    of: RecordId::from(("did", to)),
+                    at: None,
+                },
             });
         }
         KnownRecord::AppBskyFeedLike(d) => {
@@ -1213,13 +954,15 @@ pub fn create_big_update(
             let from = utils::did_to_key(did.as_str())?;
             let id = format!("{}_{}", rkey.as_str(), from);
             let to = utils::at_uri_to_record_id(&d.subject.uri)?;
-            let created_at = utils::extract_dt(&d.created_at)?;
+            let created_at = d.created_at.as_ref().to_utc();
 
-            big_update.likes.push(UpdateLike {
-                from: RecordId::from(("did", from)),
-                to,
+            big_update.likes.push(WithId {
                 id,
-                created_at,
+                data: BskyLike {
+                    from: RecordId::from(("did", from)),
+                    to,
+                    created_at,
+                },
             });
         }
         KnownRecord::AppBskyFeedRepost(d) => {
@@ -1227,13 +970,15 @@ pub fn create_big_update(
             let from = utils::did_to_key(did.as_str())?;
             let id = format!("{}_{}", rkey.as_str(), from);
             let to = utils::at_uri_to_record_id(&d.subject.uri)?;
-            let created_at = utils::extract_dt(&d.created_at)?;
+            let created_at = d.created_at.as_ref().to_utc();
 
-            big_update.reposts.push(UpdateRepost {
-                from: RecordId::from(("did", from)),
-                to,
+            big_update.reposts.push(WithId {
                 id,
-                created_at,
+                data: BskyRepost {
+                    from: RecordId::from(("did", from)),
+                    to,
+                    created_at,
+                },
             });
         }
         KnownRecord::AppBskyGraphBlock(d) => {
@@ -1241,13 +986,15 @@ pub fn create_big_update(
             let from = utils::did_to_key(did.as_str())?;
             let id = format!("{}_{}", rkey.as_str(), from);
             let to = utils::did_to_key(d.subject.as_str())?;
-            let created_at = utils::extract_dt(&d.created_at)?;
+            let created_at = d.created_at.as_ref().to_utc();
 
-            big_update.blocks.push(UpdateBlock {
-                from: RecordId::from(("did", from)),
-                to: RecordId::from(("did", to.clone())),
+            big_update.blocks.push(WithId {
                 id,
-                created_at,
+                data: BskyBlock {
+                    from: RecordId::from(("did", from)),
+                    to: RecordId::from(("did", to.clone())),
+                    created_at,
+                },
             });
         }
         KnownRecord::AppBskyGraphListblock(d) => {
@@ -1255,13 +1002,15 @@ pub fn create_big_update(
             let from = utils::did_to_key(did.as_str())?;
             let id = format!("{}_{}", rkey.as_str(), from);
             let to = utils::at_uri_to_record_id(&d.subject)?;
-            let created_at = utils::extract_dt(&d.created_at)?;
+            let created_at = d.created_at.as_ref().to_utc();
 
-            big_update.listblocks.push(UpdateListBlock {
-                from: RecordId::from(("did", from)),
-                to,
+            big_update.listblocks.push(WithId {
                 id,
-                created_at,
+                data: BskyListBlock {
+                    from: RecordId::from(("did", from)),
+                    to,
+                    created_at,
+                },
             });
         }
         KnownRecord::AppBskyGraphListitem(d) => {
@@ -1271,33 +1020,37 @@ pub fn create_big_update(
 
             let from = utils::at_uri_to_record_id(&d.list)?;
             let to = utils::did_to_key(&d.subject)?;
-            let created_at = utils::extract_dt(&d.created_at)?;
+            let created_at = d.created_at.as_ref().to_utc();
 
-            big_update.listitems.push(UpdateListItem {
-                from,
-                to: RecordId::from(("did", to.clone())),
+            big_update.listitems.push(WithId {
                 id,
-                created_at,
+                data: BskyListItem {
+                    from,
+                    to: RecordId::from(("did", to.clone())),
+                    created_at,
+                },
             });
         }
         KnownRecord::AppBskyFeedGenerator(d) => {
             let did_key = utils::did_to_key(did.as_str())?;
             let id = format!("{}_{}", rkey.as_str(), did_key);
-            let feed = UpdateFeed {
+            let feed = WithId {
                 id,
-                author: RecordId::from_table_key("did", did_key),
-                avatar: None, // TODO implement
-                created_at: utils::extract_dt(&d.created_at)?,
-                description: d.description.clone(),
-                did: d.did.to_string(),
-                display_name: d.display_name.clone(),
-                rkey: rkey.to_string(),
-                uri: format!(
-                    "at://{}/app.bsky.feed.generator/{}",
-                    did.as_str(),
-                    rkey.as_str()
-                ),
-                extra_data: process_extra_data(&d.extra_data)?,
+                data: BskyFeed {
+                    author: RecordId::from_table_key("did", did_key),
+                    avatar: None, // TODO implement
+                    created_at: d.created_at.as_ref().to_utc(),
+                    description: d.description.clone(),
+                    did: d.did.to_string(),
+                    display_name: d.display_name.clone(),
+                    rkey: rkey.to_string(),
+                    uri: format!(
+                        "at://{}/app.bsky.feed.generator/{}",
+                        did.as_str(),
+                        rkey.as_str()
+                    ),
+                    extra_data: process_extra_data(&d.extra_data)?,
+                },
             };
             big_update.feeds.push(feed);
         }
@@ -1305,15 +1058,17 @@ pub fn create_big_update(
             let did_key = utils::did_to_key(did.as_str())?;
             let id = format!("{}_{}", rkey.as_str(), did_key);
 
-            let list = UpdateList {
+            let list = WithId {
                 id,
-                name: d.name.clone(),
-                avatar: None, // TODO implement
-                created_at: utils::extract_dt(&d.created_at)?,
-                description: d.description.clone(),
-                labels: d.labels.as_ref().and_then(utils::extract_self_labels_list),
-                purpose: d.purpose.clone(),
-                extra_data: process_extra_data(&d.extra_data)?,
+                data: BskyList {
+                    name: d.name.clone(),
+                    avatar: None, // TODO implement
+                    created_at: d.created_at.as_ref().to_utc(),
+                    description: d.description.clone(),
+                    labels: d.labels.as_ref().and_then(utils::extract_self_labels_list),
+                    purpose: d.purpose.clone(),
+                    extra_data: process_extra_data(&d.extra_data)?,
+                },
             };
             big_update.lists.push(list);
         }
@@ -1438,10 +1193,12 @@ pub fn create_big_update(
 
             if let Some(r) = &record {
                 if r.table() == "post" {
-                    big_update.quotes.push(UpdateQuote {
-                        from: RecordId::from_table_key("post", id.clone()),
-                        to: r.clone(),
+                    big_update.quotes.push(WithId {
                         id: id.clone(),
+                        data: BskyQuote {
+                            from: RecordId::from_table_key("post", id.clone()),
+                            to: r.clone(),
+                        },
                     });
                 }
             }
@@ -1452,7 +1209,7 @@ pub fn create_big_update(
                     author: RecordId::from_table_key("did", did_key.clone()),
                     bridgy_original_url: None,
                     via: None,
-                    created_at: utils::extract_dt(&d.created_at)?,
+                    created_at: d.created_at.as_ref().to_utc(),
                     labels: d.labels.as_ref().and_then(utils::extract_self_labels_post),
                     text: d.text.clone(),
                     langs: d
@@ -1491,22 +1248,28 @@ pub fn create_big_update(
             big_update.posts.push(post);
 
             if parent.is_some() {
-                big_update.replies_relations.push(UpdateRepliesRelation {
-                    from: RecordId::from_table_key("did", did_key.clone()),
-                    to: RecordId::from_table_key("post", id.clone()),
+                big_update.replies_relations.push(WithId {
                     id: id.clone(),
+                    data: BskyRepliesRelation {
+                        from: RecordId::from_table_key("did", did_key.clone()),
+                        to: RecordId::from_table_key("post", id.clone()),
+                    },
                 });
 
-                big_update.reply_to_relations.push(UpdateReplyToRelation {
-                    from: RecordId::from_table_key("post", id.clone()),
-                    to: parent.unwrap(),
+                big_update.reply_to_relations.push(WithId {
                     id: id.clone(),
+                    data: BskyReplyToRelation {
+                        from: RecordId::from_table_key("post", id.clone()),
+                        to: parent.unwrap(),
+                    },
                 });
             } else {
-                big_update.posts_relations.push(UpdatePostsRelation {
-                    from: RecordId::from_table_key("did", did_key.clone()),
-                    to: RecordId::from_table_key("post", id.clone()),
+                big_update.posts_relations.push(WithId {
                     id: id.clone(),
+                    data: BskyPostsRelation {
+                        from: RecordId::from_table_key("did", did_key.clone()),
+                        to: RecordId::from_table_key("post", id.clone()),
+                    },
                 });
             }
         }

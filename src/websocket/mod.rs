@@ -2,6 +2,7 @@ use anyhow::Context;
 use fastwebsockets::{OpCode, WebSocket};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
+use sqlx::PgPool;
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -29,6 +30,7 @@ mod handler;
 struct SharedState {
     host: String,
     db: Surreal<Any>,
+    database: PgPool,
     cursor: AtomicU64,
 }
 
@@ -45,6 +47,7 @@ pub async fn start(
     certificate: String,
     cursor: u64,
     db: Surreal<Any>,
+    database: PgPool,
 ) -> anyhow::Result<()> {
     // prepare tls store
     let cloned_certificate_path = certificate.clone();
@@ -75,6 +78,7 @@ pub async fn start(
         host: host.clone(),
         db,
         cursor: AtomicU64::new(cursor),
+        database,
     });
 
     // loop infinitely, ensuring connection aborts are handled

@@ -23,14 +23,14 @@ pub fn extract_dt(dt: &atrium_api::Datetime) -> Result<surrealdb::Datetime> {
 /// Extracts the self labels from a profile record labels refs
 pub fn extract_self_labels_profile(
     labels: &Union<::atrium_api::app::bsky::actor::profile::RecordLabelsRefs>,
-) -> Option<Vec<String>> {
+) -> Vec<String> {
     match labels {
         Union::Refs(refs) => match refs {
             ::atrium_api::app::bsky::actor::profile::RecordLabelsRefs::ComAtprotoLabelDefsSelfLabels(labels) => {
-                Some(labels.values.iter().map(|l| l.val.clone()).collect())
+                 labels.values.iter().map(|l| l.val.clone()).collect()
             }
         },
-        Union::Unknown(_) => None,
+        Union::Unknown(_) => Vec::new(),
     }
 }
 

@@ -1,29 +1,7 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use surrealdb::{engine::any::Any, Datetime, RecordId, Surreal};
+use surrealdb::{engine::any::Any, RecordId, Surreal};
 use tracing::debug;
-
-/// Database struct for a bluesky profile
-#[derive(Debug, Serialize, Clone)]
-#[allow(dead_code)]
-pub struct BskyProfile {
-    #[serde(rename = "displayName")]
-    pub display_name: Option<String>,
-    pub description: Option<String>,
-    pub avatar: Option<RecordId>,
-    pub banner: Option<RecordId>,
-    #[serde(rename = "createdAt")]
-    pub created_at: Option<Datetime>,
-    #[serde(rename = "seenAt")]
-    pub seen_at: Datetime,
-    #[serde(rename = "joinedViaStarterPack")]
-    pub joined_via_starter_pack: Option<RecordId>,
-    pub labels: Option<Vec<String>>,
-    #[serde(rename = "pinnedPost")]
-    pub pinned_post: Option<RecordId>,
-    #[serde(rename = "extraData")]
-    pub extra_data: Option<String>,
-}
 
 /// Database struct for a record
 #[derive(Debug, Deserialize)]
@@ -55,96 +33,6 @@ pub struct JetstreamIdentityEvent {
     pub handle: String,
     pub seq: u64,
     pub time: String,
-}
-
-/// Database struct for a bluesky post
-#[derive(Debug, Serialize, Clone)]
-pub struct BskyPost {
-    pub author: RecordId,
-    #[serde(rename = "bridgyOriginalUrl")]
-    pub bridgy_original_url: Option<String>,
-    #[serde(rename = "createdAt")]
-    pub created_at: Datetime,
-    pub images: Option<Vec<BskyPostImage>>,
-    pub labels: Option<Vec<String>>,
-    pub langs: Option<Vec<String>>,
-    pub links: Option<Vec<String>>,
-    pub mentions: Option<Vec<RecordId>>,
-    pub parent: Option<RecordId>,
-    pub record: Option<RecordId>,
-    pub root: Option<RecordId>,
-    pub tags: Option<Vec<String>>,
-    pub text: String,
-    pub via: Option<String>,
-    pub video: Option<BskyPostVideo>,
-    #[serde(rename = "extraData")]
-    pub extra_data: Option<String>,
-}
-
-/// Database struct for a bluesky post image
-#[derive(Debug, Serialize, Clone)]
-pub struct BskyPostImage {
-    pub alt: String,
-    pub blob: RecordId,
-    #[serde(rename = "aspectRatio")]
-    pub aspect_ratio: Option<BskyPostMediaAspectRatio>,
-}
-
-/// Database struct for a bluesky post video
-#[derive(Debug, Serialize, Clone)]
-pub struct BskyPostVideo {
-    pub alt: Option<String>,
-    #[serde(rename = "aspectRatio")]
-    pub aspect_ratio: Option<BskyPostMediaAspectRatio>,
-    pub blob: BskyPostVideoBlob,
-    pub captions: Option<Vec<BskyPostVideoCaption>>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct BskyPostVideoCaption {}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct BskyPostVideoBlob {
-    pub cid: String,
-    #[serde(rename = "mediaType")]
-    pub media_type: String,
-    pub size: u64,
-}
-
-/// Database struct for a bluesky post video aspect ratio
-#[derive(Debug, Serialize, Clone)]
-pub struct BskyPostMediaAspectRatio {
-    pub width: u64,
-    pub height: u64,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct BskyFeed {
-    pub uri: String,
-    pub author: RecordId,
-    pub rkey: String,
-    pub did: String,
-    #[serde(rename = "displayName")]
-    pub display_name: String,
-    pub description: Option<String>,
-    pub avatar: Option<RecordId>,
-    #[serde(rename = "createdAt")]
-    pub created_at: Datetime,
-    #[serde(rename = "extraData")]
-    pub extra_data: Option<String>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct BskyList {
-    pub name: String,
-    pub purpose: String,
-    #[serde(rename = "createdAt")]
-    pub created_at: Datetime,
-    pub description: Option<String>,
-    pub avatar: Option<RecordId>,
-    pub labels: Option<Vec<String>>,
-    #[serde(rename = "extraData")]
-    pub extra_data: Option<String>,
 }
 
 /// Initialize the database with the necessary definitions

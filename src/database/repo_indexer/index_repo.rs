@@ -10,11 +10,13 @@ use atrium_api::{
     record::KnownRecord,
     types::string::{Did, RecordKey},
 };
+use chrono::{DateTime, Utc};
 use ipld_core::cid::Cid;
 use opentelemetry::{global, metrics::Counter};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_ipld_dagcbor::from_reader;
+use sqlx::PgPool;
 use std::{collections::HashMap, sync::LazyLock, time::Duration};
 use surrealdb::{engine::any::Any, Surreal};
 use tokio::task::spawn_blocking;
@@ -73,7 +75,7 @@ pub struct NodeData {
 fn convert_repo_to_update(
     repo: Vec<u8>,
     did: &str,
-    retrieval_time: surrealdb::sql::Datetime,
+    retrieval_time: DateTime<Utc>,
 ) -> anyhow::Result<BigUpdate> {
     // Deserialize CAR file
     let (entries, _) = rs_car_sync::car_read_all(&mut repo.as_slice(), true)?;
@@ -137,6 +139,7 @@ fn convert_repo_to_update(
 #[derive(Debug)]
 pub struct CommonState {
     db: Surreal<Any>,
+    database: PgPool,
     http_client: Client,
     did: String,
     span: Span,
@@ -158,7 +161,7 @@ pub struct DownloadRepo {
 pub struct ProcessRepo {
     common: CommonState,
     repo: Vec<u8>,
-    retrieval_time: surrealdb::sql::Datetime,
+    retrieval_time: DateTime<Utc>,
 }
 /// Fourth pipeline stage
 #[derive(Debug)]
@@ -168,7 +171,12 @@ pub struct ApplyUpdates {
 }
 
 impl DownloadService {
-    pub fn new(db: Surreal<Any>, http_client: Client, did: String) -> DownloadService {
+    pub fn new(
+        db: Surreal<Any>,
+        database: PgPool,
+        http_client: Client,
+        did: String,
+    ) -> DownloadService {
         let span = span!(target: "backfill", parent: None, Level::INFO, "pipeline_item");
         span.record("did", did.clone());
         span.in_scope(|| {
@@ -177,6 +185,7 @@ impl DownloadService {
         DownloadService {
             common: CommonState {
                 db,
+                database,
                 http_client,
                 did,
                 span,
@@ -241,7 +250,7 @@ impl Stage for DownloadRepo {
 
     #[instrument(skip(self), fields(did = self.common.did), parent = self.common.span.clone())]
     async fn run(self) -> anyhow::Result<Self::Next> {
-        let retrival_time = surrealdb::sql::Datetime::from(chrono::Utc::now());
+        let retrival_time = chrono::Utc::now();
 
         // Download the repo
         let mut attempts_left = ARGS.download_repo_attempts;
@@ -318,7 +327,9 @@ impl Stage for ApplyUpdates {
     #[instrument(skip(self), fields(did = self.common.did), parent = self.common.span.clone())]
     async fn run(self) -> anyhow::Result<Self::Next> {
         if !ARGS.no_write_when_backfilling {
-            self.update.apply(&self.common.db, "backfill").await?;
+            self.update
+                .apply(&self.common.db, self.common.database.clone(), "backfill")
+                .await?;
         } else {
             warn!("Skipping writing to the database and sleeping instead");
             std::thread::sleep(Duration::from_secs(2));

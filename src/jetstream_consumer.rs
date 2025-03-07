@@ -1,6 +1,8 @@
 use crate::{database, websocket};
 use anyhow::Context;
 use futures::{stream::FuturesUnordered, StreamExt};
+use opentelemetry_sdk::metrics::data;
+use sqlx::PgPool;
 use surrealdb::{engine::any::Any, Surreal};
 use tracing::error;
 
@@ -12,12 +14,17 @@ const JETSTREAM_HOSTS: [&str; 5] = [
     "jetstream1.us-east.bsky.network",
 ];
 
-pub async fn attach_jetstream(db: Surreal<Any>, certificate: String) -> anyhow::Result<()> {
+pub async fn attach_jetstream(
+    db: Surreal<Any>,
+    database: PgPool,
+    certificate: String,
+) -> anyhow::Result<()> {
     let mut jetstream_tasks = JETSTREAM_HOSTS
         .iter()
         .map(|host| {
             tokio::task::spawn(start_jetstream_consumer(
                 db.clone(),
+                database.clone(),
                 host.to_string(),
                 certificate.clone(),
             ))
@@ -39,6 +46,7 @@ pub async fn attach_jetstream(db: Surreal<Any>, certificate: String) -> anyhow::
 
 async fn start_jetstream_consumer(
     db: Surreal<Any>,
+    database: PgPool,
     host: String,
     certificate: String,
 ) -> anyhow::Result<()> {
@@ -49,7 +57,7 @@ async fn start_jetstream_consumer(
         .map_or(0, |e| e.time_us);
 
     // enter websocket event loop
-    websocket::start(host, certificate, cursor, db)
+    websocket::start(host, certificate, cursor, db, database)
         .await
         .context("WebSocket event loop failed")?;
 

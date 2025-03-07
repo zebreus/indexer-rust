@@ -26,7 +26,7 @@ pub async fn handle_message(
             .context("Unable to write cursor to database!")?;
     }
 
-    database::handlers::handle_event(&state.db, event)
+    database::handlers::handle_event(&state.db, state.database.clone(), event)
         .await
         .context("Unable to handle event")?;
 

@@ -1,17 +1,34 @@
 use crate::config::ARGS;
 use anyhow::{Context, Result};
 use definitions::{JetstreamCursor, Record};
+use sqlx::{postgres::PgPoolOptions, PgPool};
 use surrealdb::{engine::any::Any, opt::auth::Root, RecordId, Surreal};
 use tracing::info;
 
 pub mod big_update;
 pub mod definitions;
 pub mod handlers;
+mod postgres_definitions;
 pub mod repo_indexer;
 mod utils;
 
 /// Connect to the database
-pub async fn connect(db_endpoint: &str) -> anyhow::Result<Surreal<Any>> {
+pub async fn connect() -> anyhow::Result<PgPool> {
+    // connect to the database
+    let database = PgPoolOptions::new()
+        .max_connections(5)
+        .connect("postgres://user-name:strong-password@localhost/files")
+        .await?;
+
+    postgres_definitions::init(database.clone())
+        .await
+        .context("Failed to initialize database schema")?;
+
+    Ok(database)
+}
+
+/// Connect to the database
+pub async fn connect_surreal(db_endpoint: &str) -> anyhow::Result<Surreal<Any>> {
     // connect to the database
     info!(target: "indexer", "Connecting to the database at {}", db_endpoint);
     let db = surrealdb::engine::any::connect(db_endpoint)

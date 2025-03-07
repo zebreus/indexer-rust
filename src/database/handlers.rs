@@ -6,11 +6,12 @@ use super::{
 use crate::websocket::events::{Commit, Kind};
 use anyhow::Result;
 use atrium_api::types::string::{Did, RecordKey};
+use sqlx::PgPool;
 use surrealdb::{engine::any::Any, Surreal};
 use tracing::warn;
 
 /// Handle a new websocket event on the database
-pub async fn handle_event(db: &Surreal<Any>, event: Kind) -> Result<()> {
+pub async fn handle_event(db: &Surreal<Any>, database: PgPool, event: Kind) -> Result<()> {
     // Handle event types
     match event {
         Kind::Commit {
@@ -28,7 +29,7 @@ pub async fn handle_event(db: &Surreal<Any>, event: Kind) -> Result<()> {
                     ..
                 } => {
                     let big_update = create_big_update(did, did_key, collection, rkey, record)?;
-                    big_update.apply(db, "jetstream").await?;
+                    big_update.apply(db, database.clone(), "jetstream").await?;
                 }
                 Commit::Delete {
                     rev,

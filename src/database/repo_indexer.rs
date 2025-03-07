@@ -1,10 +1,11 @@
-use super::connect;
+use super::{connect, connect_surreal};
 use crate::config::ARGS;
 use futures::{stream::FuturesUnordered, StreamExt};
 use index_repo::DownloadService;
 use pipeline::{create_stage, next_stage};
 use repo_stream::RepoStream;
 use reqwest::Client;
+use sqlx::PgPool;
 use std::ops::Rem;
 use surrealdb::{engine::any::Any, Surreal};
 use tracing::error;
@@ -19,7 +20,7 @@ macro_rules! unordered {
     };
 }
 
-pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
+pub async fn start_full_repo_indexer(db: Surreal<Any>, database: PgPool) -> anyhow::Result<()> {
     let http_client = Client::new();
 
     let buffer_size = ARGS.pipeline_buffer_size;
@@ -31,7 +32,7 @@ pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
     let databases = ARGS
         .db
         .iter()
-        .map(|endpoint| async { connect(endpoint).await.unwrap() })
+        .map(|endpoint| async { connect_surreal(endpoint).await.unwrap() })
         .collect::<FuturesUnordered<_>>()
         .collect::<Vec<_>>()
         .await;
@@ -43,6 +44,7 @@ pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
             (
                 did,
                 databases.get(id.rem(databases.len())).unwrap().clone(),
+                database.clone(),
                 http_client.clone(),
             )
         });
@@ -50,7 +52,9 @@ pub async fn start_full_repo_indexer(db: Surreal<Any>) -> anyhow::Result<()> {
     // Create the processing pipeline
     let (mut output_receiver, _join_handle) = pumps::Pipeline::from_stream(dids)
         .filter_map(
-            create_stage(|(did, db, http_client)| DownloadService::new(db, http_client, did)),
+            create_stage(|(did, db, database, http_client)| {
+                DownloadService::new(db, database, http_client, did)
+            }),
             unordered!(concurrent_elements),
         )
         .backpressure(buffer_size)

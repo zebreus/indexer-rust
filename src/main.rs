@@ -1,10 +1,11 @@
 use anyhow::Context;
 use config::ARGS;
-use database::repo_indexer::start_full_repo_indexer;
+use database::{connect, repo_indexer::start_full_repo_indexer};
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use jetstream_consumer::attach_jetstream;
 use metrics_reporter::export_system_metrics;
 use observability::init_observability;
+use opentelemetry_sdk::metrics::data;
 use std::{
     process::exit,
     sync::atomic::{AtomicUsize, Ordering},
@@ -65,14 +66,16 @@ async fn application_main() -> anyhow::Result<()> {
     let _otel_guard = init_observability().await;
 
     // Connect to the database
-    let db = database::connect(ARGS.db.first().unwrap())
+    let db = database::connect_surreal(ARGS.db.first().unwrap())
         .await
         .context("Failed to connect to the database")?;
+    let database = connect().await?;
 
     // Create tasks
     let metrics_task = export_system_metrics().boxed();
-    let jetstream_task = attach_jetstream(db.to_owned(), ARGS.certificate.clone()).boxed();
-    let indexer_task = start_full_repo_indexer(db.to_owned()).boxed_local();
+    let jetstream_task =
+        attach_jetstream(db.to_owned(), database.clone(), ARGS.certificate.clone()).boxed();
+    let indexer_task = start_full_repo_indexer(db.to_owned(), database.clone()).boxed_local();
 
     // Add all tasks to a list
     let mut tasks: FuturesUnordered<_> = FuturesUnordered::new();
