@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nINSERT INTO follow (\n    id,\n    follower_did_id,\n    followed_did_id,\n    created_at\n) SELECT * FROM UNNEST(\n    $1::TEXT[],\n    $2::TEXT[],\n    $3::TEXT[],\n    $4::TIMESTAMP[]\n) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TimestampArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4f065d67576dd10a622d7a5d9d1c11df2f20559ecec08840041907c8462b9545"
+}

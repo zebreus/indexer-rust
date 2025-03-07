@@ -2,6 +2,7 @@ use anyhow::Context;
 use fastwebsockets::{OpCode, WebSocket};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
+use sqlx::PgPool;
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -31,6 +32,7 @@ mod handler;
 struct SharedState {
     host: String,
     db: Surreal<Any>,
+    database: PgPool,
     cursor: AtomicU64,
 }
 
@@ -42,7 +44,12 @@ impl SharedState {
 }
 
 /// Subscribe to a websocket server
-pub async fn start(host: String, cursor: u64, db: Surreal<Any>) -> anyhow::Result<()> {
+pub async fn start(
+    host: String,
+    cursor: u64,
+    db: Surreal<Any>,
+    database: PgPool,
+) -> anyhow::Result<()> {
     // prepare tls store
     let mut tls_store = RootCertStore::empty();
     let tls_cert = if let Some(certificate) = &ARGS.certificate {
@@ -70,6 +77,7 @@ pub async fn start(host: String, cursor: u64, db: Surreal<Any>) -> anyhow::Resul
         host: host.clone(),
         db,
         cursor: AtomicU64::new(cursor),
+        database,
     });
 
     // loop infinitely, ensuring connection aborts are handled
