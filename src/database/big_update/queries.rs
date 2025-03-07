@@ -1,42 +1,160 @@
 use anyhow::Result;
-use sqlx::PgExecutor;
+use sqlx::PgTransaction;
 
-use super::types::{BskyDid, BskyFollow, BskyLatestBackfill, BskyPost, WithId};
+use super::types::{BskyFollow, BskyLatestBackfill, BskyPost, WithId};
 
-fn timestamp_to_chrono(
-    timestamp: surrealdb::sql::Datetime,
-) -> Result<chrono::DateTime<chrono::Utc>> {
-    chrono::DateTime::from_timestamp(timestamp.timestamp(), timestamp.timestamp_subsec_nanos())
-        .ok_or(anyhow::anyhow!("Invalid timestamp"))
+macro_rules! get_column {
+    ($thing:expr, $field:ident) => {
+        $thing.iter().map(|x| x.$field.clone()).collect::<Vec<_>>()
+    };
+    ($thing:expr, $field:ident.$field2:ident) => {
+        $thing
+            .iter()
+            .map(|x| x.$field.$field2.clone())
+            .collect::<Vec<_>>()
+    };
+    ($thing:expr, $field:ident.$field2:ident, nullable_record) => {
+        $thing
+            .iter()
+            .map(|x| x.$field.$field2.clone())
+            .map(|x| x.map(|x| x.key().to_string()))
+            .collect::<Vec<_>>()
+    };
+    ($thing:expr, $field:ident.$field2:ident, nullable_timestamp) => {
+        $thing
+            .iter()
+            .map(|x| x.$field.$field2.clone())
+            .map(|x| x.map(|x| x.naive_utc()))
+            .collect::<Vec<_>>()
+    };
+    ($thing:expr, $field:ident.$field2:ident, timestamp) => {
+        $thing
+            .iter()
+            .map(|x| x.$field.$field2.clone())
+            .map(|x| x.naive_utc())
+            .collect::<Vec<_>>()
+    };
+    ($thing:expr, $field:ident , record) => {
+        $thing
+            .iter()
+            .map(|x| x.$field.clone())
+            .map(|x| x.key().to_string())
+            .collect::<Vec<_>>()
+    };
+    ($thing:expr, $field:ident.$field2:ident, record) => {
+        $thing
+            .iter()
+            .map(|x| x.$field.$field2.clone())
+            .map(|x| x.key().to_string())
+            .collect::<Vec<_>>()
+    };
+    ($thing:expr, $field:ident.$field2:ident) => {
+        $thing
+            .iter()
+            .map(|x| x.$field.$field2.clone())
+            .map(|x| x.key().to_string())
+            .collect::<Vec<_>>()
+    };
+    ($thing:expr, $field:ident, $transform:expr) => {
+        $thing
+            .iter()
+            .map(|x| x.$field.clone())
+            .map($transform)
+            .collect::<Vec<_>>()
+    };
+    ($thing:expr, $field:ident.$field2:ident, $transform:expr) => {
+        $thing
+            .iter()
+            .map(|x| x.$field.$field2.clone())
+            .map($transform)
+            .collect::<Vec<_>>()
+    };
 }
+macro_rules! get_columns {
+    ($thing:expr, $field:ident.$field2:ident) => {{
+        let values = $thing
+            .iter()
+            .flat_map(|x| x.$field.$field2.to_owned().unwrap_or_default().into_iter())
+            .collect::<Vec<_>>();
+        let ids = $thing
+            .iter()
+            .flat_map(|x| {
+                let id = x.id.to_string();
+                x.$field
+                    .$field2
+                    .to_owned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(move |_| id.clone())
+            })
+            .collect::<Vec<_>>();
+        (ids, values)
+    }};
+}
+
+// /// Insert a single value. Works but is slow
+// pub async fn insert_latest_backfill(
+//     update: &WithId<BskyLatestBackfill>,
+//     database: impl PgExecutor<'_>,
+// ) -> Result<u64> {
+//     let rows_affected = sqlx::query!(
+//         r"
+// INSERT INTO latest_backfill (
+//     id,
+//     of_did_id,
+//     at
+// ) VALUES (
+//     $1,
+//     $2,
+//     $3
+// ) ON CONFLICT DO NOTHING",
+//         update.id,
+//         update.data.of.key().to_string(),
+//         update.data.at
+//     )
+//     .execute(database)
+//     .await?
+//     .rows_affected();
+
+//     return Ok(rows_affected);
+// }
+
+// /// Inserting as json allows bulk insertion of array while being faster than single INSERTs. However it is slower than normal bulk insertion.
+// pub async fn insert_latest_backfills_json(
+//     update: &Vec<WithId<BskyLatestBackfill>>,
+//     database: impl PgExecutor<'_>,
+// ) -> Result<u64> {
+//     let json = serde_json::to_value(update)?;
+
+//     let rows_affected = sqlx::query!(
+//         r"
+// INSERT INTO latest_backfill (
+//     id,
+//     of_did_id,
+//     at
+// ) SELECT * FROM json_to_recordset($1::json) AS e (id text, of text, at TIMESTAMP) ON CONFLICT DO NOTHING",
+//         json
+//     )
+//     .execute(database)
+//     .await?
+//     .rows_affected();
+
+//     return Ok(rows_affected);
+// }
 
 pub async fn insert_latest_backfills(
     update: &Vec<WithId<BskyLatestBackfill>>,
-    database: impl PgExecutor<'_>,
+    database: &mut PgTransaction<'_>,
 ) -> Result<u64> {
-    let ids = update.iter().map(|x| x.id.clone()).collect::<Vec<_>>();
-    let of_did_ids = update
-        .iter()
-        .map(|x| x.data.of.key().to_string())
-        .collect::<Vec<_>>();
-    let timestamps = update
-        .iter()
-        .map(|x| {
-            x.data
-                .at
-                .clone()
-                .map(|x| {
-                    chrono::DateTime::from_timestamp(x.timestamp(), x.timestamp_subsec_nanos())
-                })
-                .unwrap_or_default()
-        })
-        .collect::<Vec<_>>();
+    let ids = get_column!(update, id);
+    let of_did_ids = get_column!(update, data.of, record);
+    let timestamps = get_column!(update, data.at, nullable_timestamp);
 
     let rows_affected = sqlx::query!(
         r"
 INSERT INTO latest_backfill (
     id,
-    of,
+    of_did_id,
     at
 ) SELECT * FROM UNNEST(
     $1::TEXT[],
@@ -47,55 +165,190 @@ INSERT INTO latest_backfill (
         of_did_ids.as_slice(),
         timestamps.as_slice() as _
     )
-    .execute(database)
+    .execute(&mut **database)
     .await?
     .rows_affected();
 
     return Ok(rows_affected);
 }
 
-pub async fn insert_latest_backfills_json(
-    update: &Vec<WithId<BskyLatestBackfill>>,
-    database: impl PgExecutor<'_>,
+pub async fn insert_posts<'a>(
+    update: &Vec<WithId<BskyPost>>,
+    database: &mut PgTransaction<'a>,
 ) -> Result<u64> {
-    let json = serde_json::to_value(update)?;
+    let ids = get_column!(update, id);
+    let authors = get_column!(update, data.author, record);
+    let bridgys = get_column!(update, data.bridgy_original_url);
+    let created_ats = get_column!(update, data.created_at);
+    let parents = get_column!(update, data.parent, nullable_record);
+    let records = get_column!(update, data.record, nullable_record);
+    let roots = get_column!(update, data.root, nullable_record);
+    let texts = get_column!(update, data.text);
+    let vias = get_column!(update, data.via);
+    let videos = get_column!(update, data.video, |x| serde_json::to_value(x).unwrap());
+    let extra_data = get_column!(update, data.extra_data);
 
-    let rows_affected = sqlx::query!(
+    let (tag_post_ids, tag_values) = get_columns!(update, data.tags);
+    let (lang_post_ids, lang_values) = get_columns!(update, data.langs);
+    let (link_post_ids, link_values) = get_columns!(update, data.links);
+    let (label_post_ids, label_values) = get_columns!(update, data.labels);
+
+    let (images_post_ids, images_unprocessed) = get_columns!(update, data.images);
+    let images_alt = get_column!(images_unprocessed, alt);
+    let images_blobs = get_column!(images_unprocessed, blob, record);
+    let images_aspectratios = get_column!(images_unprocessed, aspect_ratio);
+    let images_aspectratios_widths = images_aspectratios
+        .iter()
+        .map(|x| x.clone().map(|x| x.width as i64))
+        .collect::<Vec<_>>();
+    let images_aspectratios_heights = images_aspectratios
+        .iter()
+        .map(|x| x.clone().map(|x| x.height as i64))
+        .collect::<Vec<_>>();
+
+    sqlx::query!(
         r"
-INSERT INTO latest_backfill (
-    id,
-    of,
-    at
-) SELECT * FROM json_to_recordset($1::json) AS e (id text, of text, at TIMESTAMP) ON CONFLICT DO NOTHING",
-        json
+INSERT INTO post (
+id,
+author,
+bridgy_original_url,
+created_at,
+parent,
+record,
+root,
+text,
+via,
+video,
+extra_data
+) SELECT * FROM UNNEST(
+    $1::TEXT[],
+    $2::TEXT[],
+    $3::TEXT[],
+    $4::TIMESTAMP[],
+    $5::TEXT[],
+    $6::TEXT[],
+    $7::TEXT[],
+    $8::TEXT[],
+    $9::TEXT[],
+    $10::JSONB[],
+    $11::TEXT[]
+) ON CONFLICT DO NOTHING",
+        ids.as_slice(),
+        authors.as_slice(),
+        bridgys.as_slice() as _,
+        created_ats.as_slice() as _,
+        parents.as_slice() as _,
+        records.as_slice() as _,
+        roots.as_slice() as _,
+        texts.as_slice(),
+        vias.as_slice() as _,
+        videos.as_slice(),
+        extra_data.as_slice() as _
     )
-    .execute(database)
-    .await?
-    .rows_affected();
+    .execute(&mut **database)
+    .await
+    .unwrap();
 
-    return Ok(rows_affected);
+    sqlx::query!(
+        r"
+INSERT INTO post_label (
+post_id,
+label
+) SELECT * FROM UNNEST(
+    $1::TEXT[],
+    $2::TEXT[]
+) ON CONFLICT DO NOTHING",
+        label_post_ids.as_slice(),
+        label_values.as_slice()
+    )
+    .execute(&mut **database)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        r"
+INSERT INTO post_lang (
+post_id,
+lang
+) SELECT * FROM UNNEST(
+    $1::TEXT[],
+    $2::TEXT[]
+) ON CONFLICT DO NOTHING",
+        lang_post_ids.as_slice(),
+        lang_values.as_slice()
+    )
+    .execute(&mut **database)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        r"
+INSERT INTO post_link (
+post_id,
+link
+) SELECT * FROM UNNEST(
+    $1::TEXT[],
+    $2::TEXT[]
+) ON CONFLICT DO NOTHING",
+        link_post_ids.as_slice(),
+        link_values.as_slice()
+    )
+    .execute(&mut **database)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        r"
+INSERT INTO post_tag (
+post_id,
+tag
+) SELECT * FROM UNNEST(
+    $1::TEXT[],
+    $2::TEXT[]
+) ON CONFLICT DO NOTHING",
+        tag_post_ids.as_slice(),
+        tag_values.as_slice()
+    )
+    .execute(&mut **database)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        r"
+    INSERT INTO post_image (
+    post_id,
+    alt,
+    blob_id,
+    aspect_ratio_width,
+    aspect_ratio_height
+    ) SELECT * FROM UNNEST(
+        $1::TEXT[],
+        $2::TEXT[],
+        $3::TEXT[],
+        $4::INT[],
+        $5::INT[]
+    ) ON CONFLICT DO NOTHING",
+        images_post_ids.as_slice(),
+        images_alt.as_slice(),
+        images_blobs.as_slice(),
+        images_aspectratios_widths.as_slice() as _,
+        images_aspectratios_heights.as_slice() as _
+    )
+    .execute(&mut **database)
+    .await
+    .unwrap();
+
+    return Ok(0);
 }
 
 pub async fn insert_follows(
     update: &Vec<WithId<BskyFollow>>,
-    database: impl PgExecutor<'_>,
+    database: &mut PgTransaction<'_>,
 ) -> Result<u64> {
-    let ids = update
-        .iter()
-        .map(|follow| follow.id.clone())
-        .collect::<Vec<_>>();
-    let follower_did_ids = update
-        .iter()
-        .map(|follow| follow.data.from.key().to_string())
-        .collect::<Vec<_>>();
-    let followed_did_ids = update
-        .iter()
-        .map(|follow| follow.data.to.key().to_string())
-        .collect::<Vec<_>>();
-    let created_ats = update
-        .iter()
-        .map(|follow| follow.data.created_at.naive_utc())
-        .collect::<Vec<_>>();
+    let ids = get_column!(update, id);
+    let follower_did_ids = get_column!(update, data.from, record);
+    let followed_did_ids = get_column!(update, data.to, record);
+    let created_ats = get_column!(update, data.created_at, timestamp);
 
     let rows_affected = sqlx::query!(
         r"
@@ -115,270 +368,9 @@ INSERT INTO follow (
         followed_did_ids.as_slice(),
         created_ats.as_slice()
     )
-    .execute(database)
+    .execute(&mut **database)
     .await?
     .rows_affected();
 
     return Ok(rows_affected);
 }
-
-// ...existing code...
-
-pub async fn bulk_insert_dids(
-    db: &sqlx::PgPool,
-    updates: &[WithId<BskyDid>],
-) -> Result<u64, sqlx::Error> {
-    //     let ids = updates.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
-    //     let display_names = updates
-    //         .iter()
-    //         .map(|r| r.data.display_name.clone())
-    //         .collect::<Vec<_>>();
-    //     let descriptions = updates
-    //         .iter()
-    //         .map(|r| r.data.description.clone())
-    //         .collect::<Vec<_>>();
-    //     let avatars = updates
-    //         .iter()
-    //         .map(|r| {
-    //             r.data
-    //                 .avatar
-    //                 .as_ref()
-    //                 .map(|x| x.to_string())
-    //                 .unwrap_or_default()
-    //         })
-    //         .collect::<Vec<_>>();
-    //     let banners = updates
-    //         .iter()
-    //         .map(|r| {
-    //             r.data
-    //                 .banner
-    //                 .as_ref()
-    //                 .map(|x| x.to_string())
-    //                 .unwrap_or_default()
-    //         })
-    //         .collect::<Vec<_>>();
-    //     let labels = updates
-    //         .iter()
-    //         .map(|r| r.data.labels.clone())
-    //         .collect::<Vec<Vec<_>>>();
-    //     let joined_vias = updates
-    //         .iter()
-    //         .map(|r| {
-    //             r.data
-    //                 .joined_via_starter_pack
-    //                 .as_ref()
-    //                 .map(|x| x.to_string())
-    //                 .unwrap_or_default()
-    //         })
-    //         .collect::<Vec<_>>();
-    //     let pinned_posts = updates
-    //         .iter()
-    //         .map(|r| {
-    //             r.data
-    //                 .pinned_post
-    //                 .as_ref()
-    //                 .map(|x| x.to_string())
-    //                 .unwrap_or_default()
-    //         })
-    //         .collect::<Vec<_>>();
-    //     let created_ats = updates
-    //         .iter()
-    //         .map(|r| r.data.created_at.map(|x| x.naive_utc()).unwrap_or_default())
-    //         .collect::<Vec<_>>();
-    //     let seen_ats = updates
-    //         .iter()
-    //         .map(|r| r.data.seen_at.naive_utc())
-    //         .collect::<Vec<_>>();
-    //     let extra_data = updates
-    //         .iter()
-    //         .map(|r| r.data.extra_data.clone())
-    //         .collect::<Vec<_>>();
-    //     // let labelsrr = &labels.iter().map(|x| x.iter()
-
-    //     let rows_affected = sqlx::query!(
-    //         r#"
-    // INSERT INTO did (
-    //     id,
-    //     display_name,
-    //     description,
-    //     avatar,
-    //     banner,
-    //     joined_via_starter_pack,
-    //     pinned_post,
-    //     created_at,
-    //     seen_at,
-    //     labels,
-    //     extra_data
-    // ) SELECT * FROM UNNEST(
-    //     $1::TEXT[],
-    //     $2::TEXT[],
-    //     $3::TEXT[],
-    //     $4::TEXT[],
-    //     $5::TEXT[],
-    //     $6::TEXT[],
-    //     $7::TEXT[],
-    //     $8::TIMESTAMP[],
-    //     $9::TIMESTAMP[],
-    //     $10::TEXT[][],
-    //     $11::TEXT[]
-    // ) ON CONFLICT DO NOTHING
-    //         "#,
-    //         ids.as_slice(),
-    //         display_names.as_slice() as _,
-    //         descriptions.as_slice() as _,
-    //         avatars.as_slice(),
-    //         banners.as_slice(),
-    //         joined_vias.as_slice(),
-    //         pinned_posts.as_slice(),
-    //         created_ats.as_slice(),
-    //         seen_ats.as_slice(),
-    //         labels.as_slice() as &[&[String]],
-    //         extra_data.as_slice() as _
-    //     )
-    //     .execute(db)
-    //     .await?
-    //     .rows_affected();
-
-    Ok(0)
-}
-
-// ...existing code...
-
-// pub async fn bulk_insert_posts(
-//     db: &sqlx::PgPool,
-//     updates: &[WithId<BskyPost>],
-// ) -> Result<u64, sqlx::Error> {
-//     let ids: Vec<_> = updates.iter().map(|r| r.id.clone()).collect();
-//     let authors: Vec<_> = updates.iter().map(|r| r.data.author.to_string()).collect();
-//     let bridgys: Vec<_> = updates
-//         .iter()
-//         .map(|r| r.data.bridgy_original_url.clone().unwrap_or_default())
-//         .collect();
-//     let created_ats: Vec<_> = updates
-//         .iter()
-//         .map(|r| r.data.created_at.naive_utc())
-//         .collect();
-//     let labels: Vec<Vec<String>> = updates
-//         .iter()
-//         .map(|r| r.data.labels.clone().unwrap_or_default())
-//         .collect();
-//     let langs: Vec<Vec<String>> = updates
-//         .iter()
-//         .map(|r| r.data.langs.clone().unwrap_or_default())
-//         .collect();
-//     let links: Vec<Vec<String>> = updates
-//         .iter()
-//         .map(|r| r.data.links.clone().unwrap_or_default())
-//         .collect();
-//     let parents: Vec<_> = updates
-//         .iter()
-//         .map(|r| {
-//             r.data
-//                 .parent
-//                 .as_ref()
-//                 .map(|x| x.to_string())
-//                 .unwrap_or_default()
-//         })
-//         .collect();
-//     let records: Vec<_> = updates
-//         .iter()
-//         .map(|r| {
-//             r.data
-//                 .record
-//                 .as_ref()
-//                 .map(|x| x.to_string())
-//                 .unwrap_or_default()
-//         })
-//         .collect();
-//     let roots: Vec<_> = updates
-//         .iter()
-//         .map(|r| {
-//             r.data
-//                 .root
-//                 .as_ref()
-//                 .map(|x| x.to_string())
-//                 .unwrap_or_default()
-//         })
-//         .collect();
-//     let tags: Vec<Vec<String>> = updates
-//         .iter()
-//         .map(|r| r.data.tags.clone().unwrap_or_default())
-//         .collect();
-//     let texts: Vec<_> = updates.iter().map(|r| r.data.text.clone()).collect();
-//     let vias: Vec<_> = updates
-//         .iter()
-//         .map(|r| r.data.via.clone().unwrap_or_default())
-//         .collect();
-//     let videos: Vec<_> = updates
-//         .iter()
-//         .map(|r| serde_json::to_string(&r.data.video).unwrap_or_default())
-//         .collect();
-//     let extra_data: Vec<_> = updates
-//         .iter()
-//         .map(|r| r.data.extra_data.clone().unwrap_or_default())
-//         .collect();
-
-//     let rows_affected = sqlx::query!(
-//         r#"
-// INSERT INTO post (
-//     id,
-//     author,
-//     bridgy_original_url,
-//     created_at,
-//     labels,
-//     langs,
-//     links,
-//     parent,
-//     record,
-//     root,
-//     tags,
-//     text,
-//     via,
-//     video,
-//     extra_data
-// ) SELECT * FROM UNNEST(
-//     $1::TEXT[],
-//     $2::TEXT[],
-//     $3::TEXT[],
-//     $4::TIMESTAMP[],
-//     $5::TEXT[][],
-//     $6::TEXT[][],
-//     $7::TEXT[][],
-//     $8::TEXT[],
-//     $9::TEXT[],
-//     $10::TEXT[],
-//     $11::TEXT[][],
-//     $12::TEXT[],
-//     $13::TEXT[],
-//     $14::TEXT[],
-//     $15::TEXT[]
-// ) ON CONFLICT DO NOTHING
-//         "#,
-//         &ids,
-//         &authors,
-//         &bridgys,
-//         &created_ats,
-//         &labels,
-//         &langs,
-//         &links,
-//         &parents,
-//         &records,
-//         &roots,
-//         &tags,
-//         &texts,
-//         &vias,
-//         &videos,
-//         &extra_data
-//     )
-//     .execute(db)
-//     .await?
-//     .rows_affected();
-
-//     Ok(rows_affected)
-// }
-
-// ...existing code...
-
-// Repeat similar patterns for blob, feed, list, block, like, listitem, post_image,
-// post_mention, posts_relation, replies_relation, quotes_relation, replyto_relation,
-// repost, and latest_backfill as needed.

@@ -1,6 +1,5 @@
-use crate::config::ARGS;
-
 use super::utils::{self, at_uri_to_record_id, blob_ref_to_record_id, did_to_key};
+use crate::config::ARGS;
 use anyhow::Result;
 use atrium_api::app::bsky::richtext::facet::MainFeaturesItem;
 use atrium_api::types::Object;
@@ -13,27 +12,20 @@ use atrium_api::{
     },
 };
 use chrono::{DateTime, Utc};
-use futures::{lock::Mutex, FutureExt};
-use info::{BigUpdateInfo, BigUpdateInfoRow};
+use futures::lock::Mutex;
+use info::BigUpdateInfo;
+use opentelemetry::global;
 use opentelemetry::metrics::{Counter, Gauge, Histogram};
-use opentelemetry::{global, KeyValue};
-use queries::{insert_latest_backfills, insert_latest_backfills_json};
-use serde::{de::IgnoredAny, Serialize};
-use serde_with::skip_serializing_none;
-use sqlx::{
-    postgres::PgPoolOptions, prelude::FromRow, query::QueryAs, Executor, PgExecutor, PgPool,
-    Postgres,
-};
-use std::{
-    error,
-    sync::{atomic::Ordering, Arc, LazyLock},
-};
+use queries::{insert_follows, insert_latest_backfills, insert_posts};
+use serde::de::IgnoredAny;
+use serde::Serialize;
+use sqlx::PgPool;
+use std::sync::{atomic::Ordering, LazyLock};
+use std::time::Instant;
 use std::{future::IntoFuture, sync::atomic::AtomicU32};
-use std::{ops::Deref, time::Instant};
-use surrealdb::Datetime;
 use surrealdb::{engine::any::Any, RecordId, Surreal};
-use tokio::sync::{OnceCell, Semaphore, SemaphorePermit};
-use tracing::{debug, instrument, span, trace, warn, Instrument, Level};
+use tokio::sync::Semaphore;
+use tracing::{instrument, span, trace, warn, Instrument, Level};
 use types::{
     BskyBlock, BskyDid, BskyFeed, BskyFollow, BskyLatestBackfill, BskyLike, BskyList,
     BskyListBlock, BskyListItem, BskyPost, BskyPostImage, BskyPostMediaAspectRatio, BskyPostVideo,
@@ -55,27 +47,6 @@ static QUERY_DURATION_METRIC: LazyLock<Histogram<u64>> = LazyLock::new(|| {
             7500.0, 10000.0, 25000.0, 50000.0, 75000.0, 100000.0, 250000.0, 500000.0, 750000.0,
             1000000.0, 2500000.0,
         ])
-        .build()
-});
-static INSERTED_ROWS_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
-    global::meter("indexer")
-        .u64_counter("indexer.database.inserted_elements")
-        .with_unit("{row}")
-        .with_description("Inserted or updated rows")
-        .build()
-});
-static INSERTED_SIZE_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
-    global::meter("indexer")
-        .u64_counter("indexer.database.inserted_bytes")
-        .with_unit("By")
-        .with_description("Inserted or updated bytes (approximation)")
-        .build()
-});
-static TRANSACTIONS_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
-    global::meter("indexer")
-        .u64_counter("indexer.database.transactions")
-        .with_unit("{transaction}")
-        .with_description("Number of transactions")
         .build()
 });
 static NEWLY_DISCOVERED_DIDS_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
@@ -154,8 +125,34 @@ pub struct BigUpdate {
     posts_relations: Vec<WithId<BskyPostsRelation>>,
 }
 
-#[derive(FromRow)]
-struct Id {}
+// async fn write(
+//     writer: BinaryCopyInWriter,
+//     data: &Vec<WithId<BskyLatestBackfill>>,
+// ) -> Result<usize> {
+//     pin_mut!(writer);
+//     let mut data = data
+//         .iter()
+//         .map(|x| {
+//             (
+//                 x.id.clone(),
+//                 x.data.of.key().to_string(),
+//                 x.data.at.unwrap_or_default().naive_utc(),
+//             )
+//         })
+//         .collect::<Vec<_>>();
+//     let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+//     for m in &data {
+//         row.clear();
+//         row.push(&m.0);
+//         row.push(&m.1);
+//         row.push(&m.2);
+//         writer.as_mut().write(&row).await?;
+//     }
+
+//     writer.finish().await?;
+
+//     Ok(data.len())
+// }
 
 impl BigUpdate {
     pub fn merge(&mut self, other: BigUpdate) {
@@ -193,116 +190,116 @@ impl BigUpdate {
         });
     }
 
-    /// Acquire individual locks for each table
-    async fn acquire_locks(&self) -> Vec<SemaphorePermit> {
-        static PERMITS: LazyLock<usize> = LazyLock::new(|| 1);
-        static DID_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static FOLLOWS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static LATEST_BACKFILLS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static LIKES_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static REPOSTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static BLOCKS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static LISTBLOCKS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static LISTITEMS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static FEEDS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static LISTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static THREADGATES_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static STARTERPACKS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static POSTGATES_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static ACTORDECLARATIONS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static LABELERSERVICES_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static QUOTES_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static POSTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static REPLIES_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static REPLY_TO_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static POSTS_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static OVERWRITE_LATEST_BACKFILLS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
+    // /// Acquire individual locks for each table
+    // async fn acquire_locks(&self) -> Vec<SemaphorePermit> {
+    //     static PERMITS: LazyLock<usize> = LazyLock::new(|| 1);
+    //     static DID_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static FOLLOWS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static LATEST_BACKFILLS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static LIKES_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static REPOSTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static BLOCKS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static LISTBLOCKS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static LISTITEMS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static FEEDS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static LISTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static THREADGATES_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static STARTERPACKS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static POSTGATES_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static ACTORDECLARATIONS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static LABELERSERVICES_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static QUOTES_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static POSTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static REPLIES_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static REPLY_TO_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static POSTS_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static OVERWRITE_LATEST_BACKFILLS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
 
-        let mut permits = Vec::new();
+    //     let mut permits = Vec::new();
 
-        if !self.did.is_empty() {
-            permits.push(DID_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.follows.is_empty() {
-            permits.push(FOLLOWS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.latest_backfills.is_empty() {
-            permits.push(LATEST_BACKFILLS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.likes.is_empty() {
-            permits.push(LIKES_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.reposts.is_empty() {
-            permits.push(REPOSTS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.blocks.is_empty() {
-            permits.push(BLOCKS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.listblocks.is_empty() {
-            permits.push(LISTBLOCKS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.listitems.is_empty() {
-            permits.push(LISTITEMS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.feeds.is_empty() {
-            permits.push(FEEDS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.lists.is_empty() {
-            permits.push(LISTS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.threadgates.is_empty() {
-            permits.push(THREADGATES_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.starterpacks.is_empty() {
-            permits.push(STARTERPACKS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.postgates.is_empty() {
-            permits.push(POSTGATES_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.actordeclarations.is_empty() {
-            permits.push(ACTORDECLARATIONS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.labelerservices.is_empty() {
-            permits.push(LABELERSERVICES_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.quotes.is_empty() {
-            permits.push(QUOTES_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.posts.is_empty() {
-            permits.push(POSTS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.replies_relations.is_empty() {
-            permits.push(REPLIES_RELATIONS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.reply_to_relations.is_empty() {
-            permits.push(REPLY_TO_RELATIONS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.posts_relations.is_empty() {
-            permits.push(POSTS_RELATIONS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.overwrite_latest_backfills.is_empty() {
-            permits.push(
-                OVERWRITE_LATEST_BACKFILLS_SEMAPHORE
-                    .acquire()
-                    .await
-                    .unwrap(),
-            );
-        }
+    //     if !self.did.is_empty() {
+    //         permits.push(DID_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.follows.is_empty() {
+    //         permits.push(FOLLOWS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.latest_backfills.is_empty() {
+    //         permits.push(LATEST_BACKFILLS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.likes.is_empty() {
+    //         permits.push(LIKES_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.reposts.is_empty() {
+    //         permits.push(REPOSTS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.blocks.is_empty() {
+    //         permits.push(BLOCKS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.listblocks.is_empty() {
+    //         permits.push(LISTBLOCKS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.listitems.is_empty() {
+    //         permits.push(LISTITEMS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.feeds.is_empty() {
+    //         permits.push(FEEDS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.lists.is_empty() {
+    //         permits.push(LISTS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.threadgates.is_empty() {
+    //         permits.push(THREADGATES_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.starterpacks.is_empty() {
+    //         permits.push(STARTERPACKS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.postgates.is_empty() {
+    //         permits.push(POSTGATES_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.actordeclarations.is_empty() {
+    //         permits.push(ACTORDECLARATIONS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.labelerservices.is_empty() {
+    //         permits.push(LABELERSERVICES_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.quotes.is_empty() {
+    //         permits.push(QUOTES_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.posts.is_empty() {
+    //         permits.push(POSTS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.replies_relations.is_empty() {
+    //         permits.push(REPLIES_RELATIONS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.reply_to_relations.is_empty() {
+    //         permits.push(REPLY_TO_RELATIONS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.posts_relations.is_empty() {
+    //         permits.push(POSTS_RELATIONS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.overwrite_latest_backfills.is_empty() {
+    //         permits.push(
+    //             OVERWRITE_LATEST_BACKFILLS_SEMAPHORE
+    //                 .acquire()
+    //                 .await
+    //                 .unwrap(),
+    //         );
+    //     }
 
-        permits
-    }
+    //     permits
+    // }
 
     /// Apply this update to the database
     ///
@@ -317,27 +314,44 @@ impl BigUpdate {
         info: &BigUpdateInfo,
     ) -> Result<UpdateState> {
         let start = Instant::now();
-        // Convert the update to a string for logging later
+
         let cloned = self.clone();
         tokio::task::spawn(async move {
-            // let pg = &*POOL;
-            // pg.clo
-            // let a = sqlx::query("SELECT * FROM my_table LIMIT 1")
-            //     .fetch_one(&database)
-            //     .await;
-            // tracing::error!("Error: {:?}", a);
-            insert_latest_backfills_json(&cloned.latest_backfills, &database)
+            let mut transaction = database.begin().await.unwrap();
+
+            sqlx::query!("SET LOCAL synchronous_commit = 'off'")
+                .execute(&mut *transaction)
                 .await
                 .unwrap();
-            // insert_latest_backfills(&cloned.latest_backfills, &database)
-            //     .await
-            //     .unwrap();
+            sqlx::query!("SET LOCAL commit_delay = 10000")
+                .execute(&mut *transaction)
+                .await
+                .unwrap();
+            sqlx::query!("SET CONSTRAINTS ALL DEFERRED")
+                .execute(&mut *transaction)
+                .await
+                .unwrap();
+            sqlx::query!("LOCK latest_backfill")
+                .execute(&mut *transaction)
+                .await
+                .unwrap();
+
+            sqlx::query!("LOCK post")
+                .execute(&mut *transaction)
+                .await
+                .unwrap();
+            insert_latest_backfills(&cloned.latest_backfills, &mut transaction)
+                .await
+                .unwrap();
+            insert_posts(&cloned.posts, &mut (transaction))
+                .await
+                .unwrap();
+            insert_follows(&cloned.follows, &mut (transaction))
+                .await
+                .unwrap();
+            transaction.commit().await.unwrap();
         })
         .await?;
-        // tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        // let pg2 = pg;
-
-        // sqlx::query("SELECT 1").fetch_one(&*POOL).await?;
 
         // Create the query string
         // `RETURN VALUE none` is used to get empty return values for counting the number of inserted rows

@@ -1,21 +1,9 @@
-use opentelemetry::metrics::{Counter, Gauge, Histogram};
+use opentelemetry::metrics::Counter;
 use opentelemetry::{global, KeyValue};
 use std::sync::LazyLock;
 
 use super::BigUpdate;
 
-static QUERY_DURATION_METRIC: LazyLock<Histogram<u64>> = LazyLock::new(|| {
-    global::meter("indexer")
-        .u64_histogram("indexer.database.insert_duration")
-        .with_unit("ms")
-        .with_description("Big update duration")
-        .with_boundaries(vec![
-            0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0,
-            7500.0, 10000.0, 25000.0, 50000.0, 75000.0, 100000.0, 250000.0, 500000.0, 750000.0,
-            1000000.0, 2500000.0,
-        ])
-        .build()
-});
 static INSERTED_ROWS_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
     global::meter("indexer")
         .u64_counter("indexer.database.inserted_elements")
@@ -35,41 +23,6 @@ static TRANSACTIONS_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
         .u64_counter("indexer.database.transactions")
         .with_unit("{transaction}")
         .with_description("Number of transactions")
-        .build()
-});
-static NEWLY_DISCOVERED_DIDS_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
-    global::meter("indexer")
-        .u64_counter("indexer.database.newly_discovered_dids")
-        .with_unit("{DID}")
-        .with_description("Number of newly discovered DIDs")
-        .build()
-});
-static FAILED_BIG_UPDATES_METRIC: LazyLock<Counter<u64>> = LazyLock::new(|| {
-    global::meter("indexer")
-        .u64_counter("indexer.database.failed_big_updates")
-        .with_unit("{update}")
-        .with_description("Number of failed big updates. Should be always 0")
-        .build()
-});
-static TRANSACTION_TICKETS_COST_METRIC: LazyLock<Gauge<u64>> = LazyLock::new(|| {
-    global::meter("indexer")
-        .u64_gauge("indexer.database.transaction_cost")
-        .with_unit("{cost}")
-        .with_description("The current cost of holding a database transaction")
-        .build()
-});
-static TRANSACTION_TICKETS_AVAILABLE_METRIC: LazyLock<Gauge<u64>> = LazyLock::new(|| {
-    global::meter("indexer")
-        .u64_gauge("indexer.database.transaction_cost")
-        .with_unit("{cost}")
-        .with_description("The current cost of holding a database transaction")
-        .build()
-});
-static COLLECTED_UPDATE_SIZE_METRIC: LazyLock<Gauge<u64>> = LazyLock::new(|| {
-    global::meter("indexer")
-        .u64_gauge("indexer.database.collected_update_size")
-        .with_unit("{elements}")
-        .with_description("The current cost of holding a database transaction")
         .build()
 });
 

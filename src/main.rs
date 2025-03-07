@@ -5,7 +5,6 @@ use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use jetstream_consumer::attach_jetstream;
 use metrics_reporter::export_system_metrics;
 use observability::init_observability;
-use opentelemetry_sdk::metrics::data;
 use std::{
     process::exit,
     sync::atomic::{AtomicUsize, Ordering},

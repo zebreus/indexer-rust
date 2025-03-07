@@ -1,4 +1,4 @@
-use super::{connect, connect_surreal};
+use super::connect_surreal;
 use crate::config::ARGS;
 use futures::{stream::FuturesUnordered, StreamExt};
 use index_repo::DownloadService;

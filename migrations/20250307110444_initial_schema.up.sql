@@ -31,37 +31,57 @@ CREATE TABLE IF NOT EXISTS did (
     pinned_post TEXT,
     created_at TIMESTAMP WITH TIME ZONE,
     seen_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    labels TEXT[] NOT NULL,
     extra_data TEXT
+);
+
+CREATE TABLE IF NOT EXISTS did_label (
+    post_id TEXT NOT NULL REFERENCES post(id) DEFERRABLE,
+    label TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS post (
     id TEXT PRIMARY KEY,
-    author TEXT NOT NULL REFERENCES did(id),
+    author TEXT NOT NULL, -- REFERENCES did(id),
     bridgy_original_url TEXT,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    labels TEXT[],
-    langs TEXT[],
-    links TEXT[],
-    parent TEXT REFERENCES post(id),
+    parent TEXT, -- REFERENCES post(id) DEFERRABLE,
     record TEXT,
-    root TEXT REFERENCES post(id),
-    tags TEXT[],
+    root TEXT, -- REFERENCES post(id) DEFERRABLE,
     text TEXT NOT NULL,
     via TEXT,
     video JSONB,
     extra_data TEXT
 );
-
 ALTER TABLE did ADD CONSTRAINT fk_pinned_post FOREIGN KEY (pinned_post) REFERENCES post(id) DEFERRABLE;
 
+CREATE TABLE IF NOT EXISTS post_label (
+    post_id TEXT NOT NULL REFERENCES post(id) DEFERRABLE,
+    label TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS post_lang (
+    post_id TEXT NOT NULL REFERENCES post(id) DEFERRABLE,
+    lang TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS post_link (
+    post_id TEXT NOT NULL REFERENCES post(id) DEFERRABLE,
+    link TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS post_tag (
+    post_id TEXT NOT NULL REFERENCES post(id) DEFERRABLE,
+    tag TEXT NOT NULL
+);
+
+
 CREATE TABLE IF NOT EXISTS post_image (
-    id TEXT PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     post_id TEXT NOT NULL REFERENCES post(id),
     alt TEXT NOT NULL,
-    blob_id TEXT NOT NULL REFERENCES blob(id),
-    aspect_ratio_width BIGINT,
-    aspect_ratio_height BIGINT
+    blob_id TEXT NOT NULL, -- REFERENCES blob(id),
+    aspect_ratio_width INT,
+    aspect_ratio_height INT
 );
 
 CREATE TABLE IF NOT EXISTS post_mention (

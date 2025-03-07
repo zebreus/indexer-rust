@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n    INSERT INTO post_image (\n    post_id,\n    alt,\n    blob_id,\n    aspect_ratio_width,\n    aspect_ratio_height\n    ) SELECT * FROM UNNEST(\n        $1::TEXT[],\n        $2::TEXT[],\n        $3::TEXT[],\n        $4::INT[],\n        $5::INT[]\n    ) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Int4Array",
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3b8decb10a8c8d04446abf8e8e65c5e774646ac3200f8d3adf98f8598da5ceee"
+}

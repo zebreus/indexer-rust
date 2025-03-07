@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nINSERT INTO post (\nid,\nauthor,\nbridgy_original_url,\ncreated_at,\nparent,\nrecord,\nroot,\ntext,\nvia,\nvideo,\nextra_data\n) SELECT * FROM UNNEST(\n    $1::TEXT[],\n    $2::TEXT[],\n    $3::TEXT[],\n    $4::TIMESTAMP[],\n    $5::TEXT[],\n    $6::TEXT[],\n    $7::TEXT[],\n    $8::TEXT[],\n    $9::TEXT[],\n    $10::JSONB[],\n    $11::TEXT[]\n) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TimestampArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "JsonbArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "60d9b223f333f6cf974322f5eb26440ff5b05f649c28a4a9b473b806486ebf17"
+}

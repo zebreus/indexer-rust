@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "LOCK latest_backfill",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "7dbde7025903617a70507080aaca00dc44fb233e1e9a7e66f41c9620f64bef36"
+}

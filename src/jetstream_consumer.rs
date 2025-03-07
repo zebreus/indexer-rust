@@ -1,7 +1,6 @@
 use crate::{database, websocket};
 use anyhow::Context;
 use futures::{stream::FuturesUnordered, StreamExt};
-use opentelemetry_sdk::metrics::data;
 use sqlx::PgPool;
 use surrealdb::{engine::any::Any, Surreal};
 use tracing::error;
