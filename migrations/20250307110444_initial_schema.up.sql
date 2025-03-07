@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS did (
     description TEXT,
     avatar TEXT REFERENCES blob(id),
     banner TEXT REFERENCES blob(id),
-    joined_via_starter_pack TEXT REFERENCES starterpack(id),
+    joined_via_starter_pack TEXT REFERENCES starterpack(id) DEFERRABLE,
     -- Constraint is applied in the down migration script, because the post table is created after did table
     pinned_post TEXT,
     created_at TIMESTAMP WITH TIME ZONE,
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS did (
 );
 
 CREATE TABLE IF NOT EXISTS did_label (
-    post_id TEXT NOT NULL REFERENCES post(id) DEFERRABLE,
+    did_id TEXT NOT NULL REFERENCES did(id) DEFERRABLE,
     label TEXT NOT NULL
 );
 
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS post_tag (
 
 CREATE TABLE IF NOT EXISTS post_image (
     id SERIAL PRIMARY KEY,
-    post_id TEXT NOT NULL REFERENCES post(id),
+    post_id TEXT NOT NULL REFERENCES post(id) DEFERRABLE,
     alt TEXT NOT NULL,
     blob_id TEXT NOT NULL, -- REFERENCES blob(id),
     aspect_ratio_width INT,
@@ -87,18 +87,18 @@ CREATE TABLE IF NOT EXISTS post_image (
 CREATE TABLE IF NOT EXISTS post_mention (
     id TEXT PRIMARY KEY,
     post_id TEXT NOT NULL REFERENCES post(id),
-    mentioned_did_id TEXT NOT NULL REFERENCES did(id)
+    mentioned_did_id TEXT NOT NULL REFERENCES did(id) DEFERRABLE
 );
 
 CREATE TABLE IF NOT EXISTS feed (
     id TEXT PRIMARY KEY,
     uri TEXT NOT NULL,
-    author TEXT NOT NULL REFERENCES did(id),
+    author TEXT NOT NULL REFERENCES did(id) DEFERRABLE,
     rkey TEXT NOT NULL,
     did TEXT NOT NULL,
     display_name TEXT NOT NULL,
     description TEXT,
-    avatar TEXT REFERENCES blob(id),
+    avatar TEXT REFERENCES blob(id) DEFERRABLE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
     extra_data TEXT
 );
@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS list (
     purpose TEXT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
     description TEXT,
-    avatar TEXT REFERENCES blob(id),
+    avatar TEXT REFERENCES blob(id) DEFERRABLE,
     labels TEXT[],
     extra_data TEXT
 );
@@ -117,26 +117,26 @@ CREATE TABLE IF NOT EXISTS list (
 -- Relation tables
 CREATE TABLE IF NOT EXISTS block (
     id TEXT PRIMARY KEY,
-    blocker_did_id TEXT NOT NULL REFERENCES did(id),
-    blocked_did_id TEXT NOT NULL REFERENCES did(id),
+    blocker_did_id TEXT NOT NULL REFERENCES did(id) DEFERRABLE,
+    blocked_did_id TEXT NOT NULL REFERENCES did(id) DEFERRABLE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS follow (
     id TEXT PRIMARY KEY,
-    follower_did_id TEXT NOT NULL REFERENCES did(id),
-    followed_did_id TEXT NOT NULL REFERENCES did(id),
+    follower_did_id TEXT NOT NULL, -- REFERENCES did(id) DEFERRABLE,
+    followed_did_id TEXT NOT NULL, -- REFERENCES did(id) DEFERRABLE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS "like" (
     id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES did(id),
-    target_post_id TEXT REFERENCES post(id),
-    target_feed_id TEXT REFERENCES feed(id),
-    target_list_id TEXT REFERENCES list(id),
-    target_starterpack_id TEXT REFERENCES starterpack(id),
-    target_labeler_id TEXT REFERENCES labeler(id),
+    user_id TEXT NOT NULL REFERENCES did(id) DEFERRABLE,
+    target_post_id TEXT REFERENCES post(id) DEFERRABLE,
+    target_feed_id TEXT REFERENCES feed(id) DEFERRABLE,
+    target_list_id TEXT REFERENCES list(id) DEFERRABLE,
+    target_starterpack_id TEXT REFERENCES starterpack(id) DEFERRABLE,
+    target_labeler_id TEXT REFERENCES labeler(id) DEFERRABLE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
     CHECK (
         (target_post_id IS NOT NULL)::integer +
@@ -149,39 +149,39 @@ CREATE TABLE IF NOT EXISTS "like" (
 
 CREATE TABLE IF NOT EXISTS listitem (
     id TEXT PRIMARY KEY,
-    list_id TEXT NOT NULL REFERENCES list(id),
-    did_id TEXT NOT NULL REFERENCES did(id),
+    list_id TEXT NOT NULL REFERENCES list(id) DEFERRABLE,
+    did_id TEXT NOT NULL REFERENCES did(id) DEFERRABLE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS posts_relation (
     id TEXT PRIMARY KEY,
-    did_id TEXT NOT NULL REFERENCES did(id),
-    post_id TEXT NOT NULL REFERENCES post(id)
+    did_id TEXT NOT NULL REFERENCES did(id) DEFERRABLE,
+    post_id TEXT NOT NULL REFERENCES post(id) DEFERRABLE
 );
 
 CREATE TABLE IF NOT EXISTS replies_relation (
     id TEXT PRIMARY KEY,
-    did_id TEXT NOT NULL REFERENCES did(id),
-    post_id TEXT NOT NULL REFERENCES post(id)
+    did_id TEXT NOT NULL REFERENCES did(id) DEFERRABLE,
+    post_id TEXT NOT NULL REFERENCES post(id) DEFERRABLE
 );
 
 CREATE TABLE IF NOT EXISTS quotes_relation (
     id TEXT PRIMARY KEY,
-    source_post_id TEXT NOT NULL REFERENCES post(id),
-    target_post_id TEXT NOT NULL REFERENCES post(id)
+    source_post_id TEXT NOT NULL REFERENCES post(id) DEFERRABLE,
+    target_post_id TEXT NOT NULL REFERENCES post(id) DEFERRABLE
 );
 
 CREATE TABLE IF NOT EXISTS replyto_relation (
     id TEXT PRIMARY KEY,
-    source_post_id TEXT NOT NULL REFERENCES post(id),
-    target_post_id TEXT NOT NULL REFERENCES post(id)
+    source_post_id TEXT NOT NULL REFERENCES post(id) DEFERRABLE,
+    target_post_id TEXT NOT NULL REFERENCES post(id) DEFERRABLE
 );
 
 CREATE TABLE IF NOT EXISTS repost (
     id TEXT PRIMARY KEY,
-    did_id TEXT NOT NULL REFERENCES did(id),
-    post_id TEXT NOT NULL REFERENCES post(id),
+    did_id TEXT NOT NULL REFERENCES did(id) DEFERRABLE,
+    post_id TEXT NOT NULL REFERENCES post(id) DEFERRABLE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
