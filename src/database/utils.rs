@@ -3,21 +3,12 @@ use ::atrium_api::{
     types::{string::RecordKey, BlobRef, TypedBlobRef, Union},
 };
 use anyhow::{Context, Result};
-use atrium_api::types::string as atrium_api;
 use lazy_static::lazy_static;
 use regex::Regex;
 use surrealdb::RecordId;
 
 lazy_static! {
     static ref VALID_DID_KEY_REGEX: Regex = Regex::new(r"^(plc|web)_[a-z0-9_]+$").unwrap();
-}
-
-/// Converts a datetime from the atrium API to a surreal datetime
-pub fn extract_dt(dt: &atrium_api::Datetime) -> Result<surrealdb::Datetime> {
-    Ok(chrono::DateTime::parse_from_rfc3339(dt.as_str())
-        .context("Datetime conversion failed")?
-        .to_utc()
-        .into())
 }
 
 /// Extracts the self labels from a profile record labels refs

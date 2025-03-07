@@ -8,7 +8,6 @@ use tracing::info;
 pub mod big_update;
 pub mod definitions;
 pub mod handlers;
-mod postgres_definitions;
 pub mod repo_indexer;
 mod utils;
 
@@ -19,10 +18,6 @@ pub async fn connect() -> anyhow::Result<PgPool> {
         .max_connections(5)
         .connect("postgres://user-name:strong-password@localhost/files")
         .await?;
-
-    postgres_definitions::init(database.clone())
-        .await
-        .context("Failed to initialize database schema")?;
 
     Ok(database)
 }
