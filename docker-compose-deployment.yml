@@ -35,7 +35,7 @@ services:
       test: bash -c "exec 6<> /dev/tcp/localhost/4317"
       interval: 30s
       timeout: 15s
-      retries: 3
+      retries: 5
     labels:
       - "traefik.enable=true"
       # Insert your domain here
@@ -57,12 +57,12 @@ services:
       - -A
       - --user=root
       - --pass=root
-      - rocksdb://rocksdb
+      - rocksdb:///data/rocksdb
     healthcheck:
       test: bash -c "exec 6<> /dev/tcp/localhost/8000"
-      interval: 10s
-      timeout: 5s
-      retries: 10
+      interval: 30s
+      timeout: 15s
+      retries: 5
     volumes:
       - /data/surreal/rocksdb:/data/rocksdb
     restart: always
