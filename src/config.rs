@@ -13,7 +13,7 @@ pub struct Args {
     pub threads: Option<usize>,
     /// Endpoint of the database server (including port and protocol)
     /// You can specify multiple surrealdbs by repeating this argument, but they should all point to the same underlying datastore
-    #[arg(short = 'D', long, num_args=1..=16)]
+    #[arg(short = 'D', long, num_args=1..=16, default_value = "ws://127.0.0.1:8000")]
     pub db: Vec<String>,
     /// Username for the database server
     #[arg(short, long, default_value = "root")]
