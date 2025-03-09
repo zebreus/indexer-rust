@@ -23,15 +23,12 @@ use opentelemetry::metrics::{Counter, Gauge, Histogram};
 use opentelemetry::{global, KeyValue};
 use serde::{de::IgnoredAny, Serialize};
 use serde_with::skip_serializing_none;
+use std::sync::{atomic::Ordering, LazyLock};
 use std::time::Instant;
-use std::{
-    error,
-    sync::{atomic::Ordering, LazyLock},
-};
 use std::{future::IntoFuture, sync::atomic::AtomicU32};
 use surrealdb::Datetime;
 use surrealdb::{engine::any::Any, RecordId, Surreal};
-use tokio::sync::{Semaphore, SemaphorePermit};
+use tokio::sync::Semaphore;
 use tracing::{debug, instrument, span, trace, warn, Instrument, Level};
 
 #[derive(Debug, Serialize, Clone)]
@@ -483,116 +480,118 @@ impl BigUpdate {
         });
     }
 
-    /// Acquire individual locks for each table
-    async fn acquire_locks(&self) -> Vec<SemaphorePermit> {
-        static PERMITS: LazyLock<usize> = LazyLock::new(|| 1);
-        static DID_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static FOLLOWS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static LATEST_BACKFILLS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static LIKES_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static REPOSTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static BLOCKS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static LISTBLOCKS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static LISTITEMS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static FEEDS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static LISTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static THREADGATES_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static STARTERPACKS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static POSTGATES_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static ACTORDECLARATIONS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static LABELERSERVICES_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static QUOTES_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static POSTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
-        static REPLIES_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static REPLY_TO_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static POSTS_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
-        static OVERWRITE_LATEST_BACKFILLS_SEMAPHORE: LazyLock<Semaphore> =
-            LazyLock::new(|| Semaphore::new(*PERMITS));
+    // /// Acquire individual locks for each table
+    // ///
+    // /// Currently unused
+    // async fn acquire_locks(&self) -> Vec<SemaphorePermit> {
+    //     static PERMITS: LazyLock<usize> = LazyLock::new(|| 1);
+    //     static DID_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static FOLLOWS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static LATEST_BACKFILLS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static LIKES_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static REPOSTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static BLOCKS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static LISTBLOCKS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static LISTITEMS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static FEEDS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static LISTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static THREADGATES_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static STARTERPACKS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static POSTGATES_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static ACTORDECLARATIONS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static LABELERSERVICES_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static QUOTES_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static POSTS_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static REPLIES_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static REPLY_TO_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static POSTS_RELATIONS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
+    //     static OVERWRITE_LATEST_BACKFILLS_SEMAPHORE: LazyLock<Semaphore> =
+    //         LazyLock::new(|| Semaphore::new(*PERMITS));
 
-        let mut permits = Vec::new();
+    //     let mut permits = Vec::new();
 
-        if !self.did.is_empty() {
-            permits.push(DID_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.follows.is_empty() {
-            permits.push(FOLLOWS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.latest_backfills.is_empty() {
-            permits.push(LATEST_BACKFILLS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.likes.is_empty() {
-            permits.push(LIKES_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.reposts.is_empty() {
-            permits.push(REPOSTS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.blocks.is_empty() {
-            permits.push(BLOCKS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.listblocks.is_empty() {
-            permits.push(LISTBLOCKS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.listitems.is_empty() {
-            permits.push(LISTITEMS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.feeds.is_empty() {
-            permits.push(FEEDS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.lists.is_empty() {
-            permits.push(LISTS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.threadgates.is_empty() {
-            permits.push(THREADGATES_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.starterpacks.is_empty() {
-            permits.push(STARTERPACKS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.postgates.is_empty() {
-            permits.push(POSTGATES_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.actordeclarations.is_empty() {
-            permits.push(ACTORDECLARATIONS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.labelerservices.is_empty() {
-            permits.push(LABELERSERVICES_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.quotes.is_empty() {
-            permits.push(QUOTES_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.posts.is_empty() {
-            permits.push(POSTS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.replies_relations.is_empty() {
-            permits.push(REPLIES_RELATIONS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.reply_to_relations.is_empty() {
-            permits.push(REPLY_TO_RELATIONS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.posts_relations.is_empty() {
-            permits.push(POSTS_RELATIONS_SEMAPHORE.acquire().await.unwrap());
-        }
-        if !self.overwrite_latest_backfills.is_empty() {
-            permits.push(
-                OVERWRITE_LATEST_BACKFILLS_SEMAPHORE
-                    .acquire()
-                    .await
-                    .unwrap(),
-            );
-        }
+    //     if !self.did.is_empty() {
+    //         permits.push(DID_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.follows.is_empty() {
+    //         permits.push(FOLLOWS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.latest_backfills.is_empty() {
+    //         permits.push(LATEST_BACKFILLS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.likes.is_empty() {
+    //         permits.push(LIKES_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.reposts.is_empty() {
+    //         permits.push(REPOSTS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.blocks.is_empty() {
+    //         permits.push(BLOCKS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.listblocks.is_empty() {
+    //         permits.push(LISTBLOCKS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.listitems.is_empty() {
+    //         permits.push(LISTITEMS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.feeds.is_empty() {
+    //         permits.push(FEEDS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.lists.is_empty() {
+    //         permits.push(LISTS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.threadgates.is_empty() {
+    //         permits.push(THREADGATES_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.starterpacks.is_empty() {
+    //         permits.push(STARTERPACKS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.postgates.is_empty() {
+    //         permits.push(POSTGATES_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.actordeclarations.is_empty() {
+    //         permits.push(ACTORDECLARATIONS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.labelerservices.is_empty() {
+    //         permits.push(LABELERSERVICES_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.quotes.is_empty() {
+    //         permits.push(QUOTES_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.posts.is_empty() {
+    //         permits.push(POSTS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.replies_relations.is_empty() {
+    //         permits.push(REPLIES_RELATIONS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.reply_to_relations.is_empty() {
+    //         permits.push(REPLY_TO_RELATIONS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.posts_relations.is_empty() {
+    //         permits.push(POSTS_RELATIONS_SEMAPHORE.acquire().await.unwrap());
+    //     }
+    //     if !self.overwrite_latest_backfills.is_empty() {
+    //         permits.push(
+    //             OVERWRITE_LATEST_BACKFILLS_SEMAPHORE
+    //                 .acquire()
+    //                 .await
+    //                 .unwrap(),
+    //         );
+    //     }
 
-        permits
-    }
+    //     permits
+    // }
 
     /// Apply this update to the database
     ///
@@ -698,7 +697,7 @@ impl BigUpdate {
         let errors = result.take_errors();
 
         // Return retry if the transaction can be retried
-        if errors.len() > 0 {
+        if !errors.is_empty() {
             let can_be_retried = errors.iter().any(|(_, e)| {
                 if let surrealdb::Error::Api(surrealdb::error::Api::Query(message)) = e {
                     message.contains("This transaction can be retried")
@@ -732,7 +731,7 @@ impl BigUpdate {
         QUERY_DURATION_METRIC.record(update_duration.as_millis() as u64, &[]);
 
         // Return error if there are any errors
-        if errors.len() > 0 {
+        if !errors.is_empty() {
             FAILED_BIG_UPDATES_METRIC.add(1, &[]);
 
             let mut sorted_errors = errors.into_iter().collect::<Vec<_>>();
@@ -924,10 +923,10 @@ impl BigUpdate {
                 *count += all.count as usize;
                 COLLECTED_UPDATE_SIZE_METRIC.record(*count as u64, &[]);
                 update.merge(self);
-                if *count < ARGS.min_rows_per_transaction as usize {
+                if *count < ARGS.min_rows_per_transaction {
                     return Ok(());
                 }
-                let update = std::mem::replace(update, BigUpdate::default());
+                let update = std::mem::take(update);
                 *count = 0;
                 drop(lock);
                 let info = tokio::task::block_in_place(|| update.create_info());
