@@ -82,8 +82,18 @@ pin-project-lite = "0.2.16"
 pumps = "0.0.4"
 
 [profile.release]
+# Enable lto for best performance
+lto = "fat"
+# One codegen unit for better intracrate optimization
+codegen-units = 1
+# Include some debug info for better crash reports
+strip = false
+debug = "line-tables-only"
+
+# Profile with lto for testing performance in development
+[profile.dev-lto]
+inherits = "release"
 lto = "thin"
 strip = false
 debug = "full"
-opt-level = 3
 incremental = true

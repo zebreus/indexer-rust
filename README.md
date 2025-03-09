@@ -17,18 +17,18 @@ You may need to increase the ulimit for the number of open files. You can do thi
 
 ## Debugging and profiling
 
+For benchmarking during development us the `dev-lto` profile. It should provide a reasonable compromise between build-time and runtime performance. To run the indexer with the `dev-lto` profile run `cargo run --profile dev-lto`.
+
 ### tokio
 
-You can use tokio-console to get more insights into what the tokio tasks are currently doing. Just run `tokio-console` while the indexer is running.
+You can use tokio-console to get more insights into what the tokio tasks are currently doing. To enable Just run `tokio-console` while the indexer is running.
 
 ### opentelemetry
 
-The application uses opentelemetry for metrics, traces, and logs. It exports signal via the OTLP grpc protocol. You can configure the exporter with the usual opentelemetry environment variables.
-
-The spin up a docker container with a collector and grafana use
+The application uses opentelemetry for metrics, traces, and logs. It exports signal via the OTLP grpc protocol. You can configure the exporter with the usual opentelemetry environment variables. The spin up a docker container with a collector and grafana use:
 
 ```
 docker run -p 3000:3000 -p 4317:4317 --rm -ti grafana/otel-lgtm
 ```
 
-and then visit `localhost:3000` and login as `admin` with password `admin`.
+and then visit `localhost:3000`. To disable opentelemetry use the `--no-otel-logs` and `--no-otel-metrics` flags.
