@@ -1,0 +1,31 @@
+services:
+  grafana:
+    build:
+      context: grafana
+      dockerfile: Dockerfile
+    container_name: grafana
+    volumes:
+      - ./data/grafana/grafana:/data/grafana
+      - ./data/grafana/prometheus:/data/prometheus
+      - ./data/grafana/loki:/loki
+    environment:
+      GF_PATHS_DATA: /data/grafana
+    restart: always
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:4317:4317"
+  surrealdb:
+    image: surrealdb/surrealdb:latest
+    container_name: surrealdb
+    ports:
+      - "127.0.0.1:8000:8000"
+    user: root
+    command:
+      - start
+      - -A
+      - --user=root
+      - --pass=root
+      - rocksdb://rocksdb
+    volumes:
+      - ./data/surreal/rocksdb:/data/rocksdb
+    restart: always

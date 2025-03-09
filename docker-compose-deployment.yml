@@ -1,0 +1,85 @@
+services:
+  traefik:
+    image: "traefik:v3.3"
+    container_name: "traefik"
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entryPoints.websecure.address=:443"
+      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      # Insert your email here
+      - "--certificatesresolvers.myresolver.acme.email=example@example.com"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "443:443"
+    volumes:
+      - "/data/letsencrypt:/letsencrypt"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+  grafana:
+    build:
+      context: grafana
+      dockerfile: Dockerfile
+    container_name: grafana
+    volumes:
+      - /data/grafana/grafana:/data/grafana
+      - /data/grafana/prometheus:/data/prometheus
+      - /data/grafana/loki:/loki
+    environment:
+      GF_PATHS_DATA: /data/grafana
+    restart: always
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: bash -c "exec 6<> /dev/tcp/localhost/4317"
+      interval: 30s
+      timeout: 15s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      # Insert your domain here
+      - "traefik.http.routers.grafana.rule=Host(`monitoring.indexer.skyfeedlol.lol`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.routers.grafana.tls.certresolver=myresolver"
+      - "traefik.http.routers.grafana.middlewares=auth"
+      # Generate a new password with `htpasswd -nB -C4 grafana`
+      - "traefik.http.middlewares.auth.basicauth.users=grafana:$$2y$$04$$qxpOMWJdp4vMc2Z1u4afaeykArMJw7Y2cz.JeNKTVx/TfPu31TvQK"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+  surrealdb:
+    image: surrealdb/surrealdb:latest
+    container_name: surrealdb
+    ports:
+      - "127.0.0.1:8000:8000"
+    user: root
+    command:
+      - start
+      - -A
+      - --user=root
+      - --pass=root
+      - rocksdb://rocksdb
+    healthcheck:
+      test: bash -c "exec 6<> /dev/tcp/localhost/8000"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - /data/surreal/rocksdb:/data/rocksdb
+    restart: always
+  indexer:
+    depends_on:
+      surrealdb:
+        condition: service_started
+
+      grafana:
+        condition: service_healthy
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: indexer
+    command:
+      - --db=ws://surrealdb:8000
+      # Insert additional flags here
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://grafana:4317"
+    restart: always

@@ -5,6 +5,10 @@ edition = "2021"
 authors = ["redsolver", "PancakeTAS"]
 description = "ATProto/Bluesky Indexer powered by SurrealDB and Jetstream"
 
+[[bin]]
+name = "indexer"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0.96"
 hyper = "1.6.0"
@@ -93,6 +97,7 @@ debug = "line-tables-only"
 # Profile with lto for testing performance in development
 [profile.dev-lto]
 inherits = "release"
+codegen-units = 16
 lto = "thin"
 strip = false
 debug = "full"
