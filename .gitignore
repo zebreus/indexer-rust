@@ -1,5 +1,4 @@
 # cargo files
-Cargo.lock
 /target
 
 # ide files
