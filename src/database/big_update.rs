@@ -605,8 +605,6 @@ impl BigUpdate {
         info: &BigUpdateInfo,
     ) -> Result<UpdateState> {
         let start = Instant::now();
-        // Convert the update to a string for logging later
-
         // Create the query string
         // `RETURN VALUE none` is used to get empty return values for counting the number of inserted rows
         let query_string = r#"
@@ -672,6 +670,13 @@ impl BigUpdate {
         let preparation_duration = start.elapsed();
         let after_update = Instant::now();
 
+        // What follows is a complex mechanism to limit the number of concurrent transactions. We need to do this ourselves because surrealdb just drops conflicting transactions.
+        // The mechanism is as follows:
+
+        // We have a given budget of permits that can be used for transactions. Each transaction costs a certain amount of permits, the bigger the transaction, the more permits it costs.
+        //
+        // The base cost of a transaction is increased, when transactions are dropped due to congestion, and decreased when transactions are successful.
+
         // Minimum cost for a transaction in permits
         static MIN_COST: u32 = 20;
         // Maximum cost for a transaction in permits
@@ -714,7 +719,7 @@ impl BigUpdate {
                     })
                     .unwrap();
 
-                warn!("Failed but can be retried");
+                trace!("Transaction can be retried");
                 return Ok(UpdateState::Retry);
             }
         }
@@ -725,7 +730,10 @@ impl BigUpdate {
                 Some(std::cmp::max(MIN_COST, x - 1))
             })
             .unwrap();
-        warn!("Cost: {}", TRANSACTION_COST.load(Ordering::Relaxed));
+        trace!(
+            "Current cost for a transaction is {}",
+            TRANSACTION_COST.load(Ordering::Relaxed)
+        );
 
         let update_duration = after_update.elapsed();
         QUERY_DURATION_METRIC.record(update_duration.as_millis() as u64, &[]);
@@ -911,7 +919,8 @@ impl BigUpdate {
     ///
     /// `source` is a string describing the source of the update, used for metrics
     pub async fn apply(self, db: &Surreal<Any>, source: &str) -> Result<()> {
-        // Bundle small updates
+        // If updates are too small, we add them into an accumulator and return here.
+        // The accumulated updates will be flushed when it is big enough.
         let (mut update, info) = {
             let info = tokio::task::block_in_place(|| self.create_info());
 
@@ -937,6 +946,7 @@ impl BigUpdate {
             }
         };
 
+        // This number is really big, because updates should always succeed after a few retries
         let mut attempts_left = 100;
         loop {
             let state = update.attempt_apply(db, source, &info).await?;
@@ -945,16 +955,18 @@ impl BigUpdate {
                     break;
                 }
                 UpdateState::Retry => {
-                    warn!("Retrying update {} attempts left", attempts_left);
+                    trace!("Retrying update {} attempts left", attempts_left);
                     attempts_left -= 1;
                     if attempts_left == 0 {
-                        return Err(anyhow::anyhow!("Too many retries"));
+                        return Err(anyhow::anyhow!(
+                            "Failed to apply an update after 100 retries. This needs investigation."
+                        ));
                     }
                 }
             }
         }
         if attempts_left < 100 {
-            warn!("Update successful after {} retries", 100 - attempts_left);
+            trace!("Update successful after {} retries", 100 - attempts_left);
         }
 
         Ok(())
