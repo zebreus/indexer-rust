@@ -20,6 +20,8 @@ use tokio_rustls::{
 };
 use tracing::{debug, info, trace, warn};
 
+use crate::config::ARGS;
+
 mod conn;
 pub mod events;
 mod handler;
@@ -40,28 +42,21 @@ impl SharedState {
 }
 
 /// Subscribe to a websocket server
-pub async fn start(
-    host: String,
-    certificate: String,
-    cursor: u64,
-    db: Surreal<Any>,
-) -> anyhow::Result<()> {
+pub async fn start(host: String, cursor: u64, db: Surreal<Any>) -> anyhow::Result<()> {
     // prepare tls store
-    let cloned_certificate_path = certificate.clone();
-    debug!(target: "indexer", "Creating tls store for certificate: {}", cloned_certificate_path);
     let mut tls_store = RootCertStore::empty();
-    let tls_cert = CertificateDer::from_pem_file(certificate).with_context(|| {
-        format!(
-            "Unable to parse certificate from: {}",
-            cloned_certificate_path
-        )
-    })?;
-    tls_store.add(tls_cert).with_context(|| {
-        format!(
-            "Unable to add certificate to tls store: {}",
-            cloned_certificate_path
-        )
-    })?;
+    let tls_cert = if let Some(certificate) = &ARGS.certificate {
+        debug!(target: "indexer", "Using the root certificate from {}", &certificate);
+        CertificateDer::from_pem_file(certificate)
+            .with_context(|| format!("Unable to parse certificate from: {}", certificate))?
+    } else {
+        debug!(target: "indexer", "Using the bundled ISRG Root X1 certificate");
+        CertificateDer::from_pem_slice(include_bytes!("../../ISRG_Root_X1.pem"))
+            .with_context(|| "Unable to bundled certificate")?
+    };
+    tls_store
+        .add(tls_cert)
+        .with_context(|| "Unable to add certificate to tls store.")?;
     let tls_config = Arc::new(
         ClientConfig::builder()
             .with_root_certificates(Arc::new(tls_store))

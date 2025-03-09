@@ -5,9 +5,9 @@ use std::sync::LazyLock;
 #[derive(Parser, Debug)]
 #[command(about)]
 pub struct Args {
-    /// Certificate to check jetstream server against
-    #[arg(short = 'c', long, default_value = "/etc/ssl/certs/ISRG_Root_X1.pem")]
-    pub certificate: String,
+    /// Path to a certificate to check jetstream server against. By default the bundled ISRG Root X1 certificate is used.
+    #[arg(short = 'c', long)]
+    pub certificate: Option<String>,
     /// Set the tokio threadpool size. The default value is the number of cores available to the system.
     #[arg(long)]
     pub threads: Option<usize>,

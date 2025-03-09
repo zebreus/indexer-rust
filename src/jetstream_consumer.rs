@@ -12,16 +12,10 @@ const JETSTREAM_HOSTS: [&str; 5] = [
     "jetstream1.us-east.bsky.network",
 ];
 
-pub async fn attach_jetstream(db: Surreal<Any>, certificate: String) -> anyhow::Result<()> {
+pub async fn attach_jetstream(db: Surreal<Any>) -> anyhow::Result<()> {
     let mut jetstream_tasks = JETSTREAM_HOSTS
         .iter()
-        .map(|host| {
-            tokio::task::spawn(start_jetstream_consumer(
-                db.clone(),
-                host.to_string(),
-                certificate.clone(),
-            ))
-        })
+        .map(|host| tokio::task::spawn(start_jetstream_consumer(db.clone(), host.to_string())))
         .collect::<FuturesUnordered<_>>();
 
     loop {
@@ -37,11 +31,7 @@ pub async fn attach_jetstream(db: Surreal<Any>, certificate: String) -> anyhow::
     Ok(())
 }
 
-async fn start_jetstream_consumer(
-    db: Surreal<Any>,
-    host: String,
-    certificate: String,
-) -> anyhow::Result<()> {
+async fn start_jetstream_consumer(db: Surreal<Any>, host: String) -> anyhow::Result<()> {
     // fetch initial cursor
     let cursor = database::fetch_cursor(&db, &host)
         .await
@@ -49,7 +39,7 @@ async fn start_jetstream_consumer(
         .map_or(0, |e| e.time_us);
 
     // enter websocket event loop
-    websocket::start(host, certificate, cursor, db)
+    websocket::start(host, cursor, db)
         .await
         .context("WebSocket event loop failed")?;
 

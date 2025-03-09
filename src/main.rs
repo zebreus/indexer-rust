@@ -71,7 +71,7 @@ async fn application_main() -> anyhow::Result<()> {
 
     // Create tasks
     let metrics_task = export_system_metrics().boxed();
-    let jetstream_task = attach_jetstream(db.to_owned(), ARGS.certificate.clone()).boxed();
+    let jetstream_task = attach_jetstream(db.to_owned()).boxed();
     let indexer_task = start_full_repo_indexer(db.to_owned()).boxed_local();
 
     // Add all tasks to a list
