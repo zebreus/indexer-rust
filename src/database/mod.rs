@@ -21,6 +21,8 @@ pub async fn connect() -> anyhow::Result<PgPool> {
         .connect(&ARGS.db)
         .await?;
 
+    sqlx::migrate!("./migrations").run(&database).await?;
+
     Ok(database)
 }
 
