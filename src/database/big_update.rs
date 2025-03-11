@@ -364,8 +364,11 @@ impl BigUpdate {
         insert_quotes_relations(&quotes, &mut transaction).await?;
         insert_replies_relations(&replies_relations, &mut transaction).await?;
         insert_reply_to_relations(&reply_to_relations, &mut transaction).await?;
-        insert_posts_relations(&posts_relations, &mut transaction).await?;
         insert_posts(&posts, &mut transaction).await?;
+        insert_posts_relations(&posts_relations, &mut transaction).await?;
+        sqlx::query!("LOCK latest_backfill")
+            .execute(&mut *transaction)
+            .await?;
         insert_latest_backfills(&latest_backfills, &mut transaction).await?;
         upsert_latest_backfills(&overwrite_latest_backfills, &mut transaction).await?;
         transaction.commit().await?;
