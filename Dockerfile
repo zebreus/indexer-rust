@@ -16,6 +16,8 @@ RUN rm -rf src
 # Copy the source code
 COPY ISRG_Root_X1.pem .
 COPY src ./src
+COPY migrations ./migrations
+COPY .sqlx ./.sqlx
 
 # Build the project
 RUN touch src/main.rs && cargo build --locked --offline --release
