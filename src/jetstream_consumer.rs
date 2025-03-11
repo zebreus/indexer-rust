@@ -2,7 +2,6 @@ use crate::{database, websocket};
 use anyhow::Context;
 use futures::{stream::FuturesUnordered, StreamExt};
 use sqlx::PgPool;
-use surrealdb::{engine::any::Any, Surreal};
 use tracing::error;
 
 const JETSTREAM_HOSTS: [&str; 5] = [
@@ -13,15 +12,11 @@ const JETSTREAM_HOSTS: [&str; 5] = [
     "jetstream1.us-east.bsky.network",
 ];
 
-pub async fn attach_jetstream(db: Surreal<Any>, database: PgPool) -> anyhow::Result<()> {
+pub async fn attach_jetstream(database: PgPool) -> anyhow::Result<()> {
     let mut jetstream_tasks = JETSTREAM_HOSTS
         .iter()
         .map(|host| {
-            tokio::task::spawn(start_jetstream_consumer(
-                db.clone(),
-                database.clone(),
-                host.to_string(),
-            ))
+            tokio::task::spawn(start_jetstream_consumer(database.clone(), host.to_string()))
         })
         .collect::<FuturesUnordered<_>>();
 
@@ -38,19 +33,15 @@ pub async fn attach_jetstream(db: Surreal<Any>, database: PgPool) -> anyhow::Res
     Ok(())
 }
 
-async fn start_jetstream_consumer(
-    db: Surreal<Any>,
-    database: PgPool,
-    host: String,
-) -> anyhow::Result<()> {
+async fn start_jetstream_consumer(database: PgPool, host: String) -> anyhow::Result<()> {
     // fetch initial cursor
-    let cursor = database::fetch_cursor(&db, &host)
+    let cursor = database::fetch_cursor(&database, &host)
         .await
         .context("Failed to fetch cursor from database")?
         .map_or(0, |e| e.time_us);
 
     // enter websocket event loop
-    websocket::start(host, cursor, db, database)
+    websocket::start(host, cursor, database)
         .await
         .context("WebSocket event loop failed")?;
 

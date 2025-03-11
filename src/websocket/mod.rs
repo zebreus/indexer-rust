@@ -5,12 +5,11 @@ use hyper_util::rt::TokioIo;
 use sqlx::PgPool;
 use std::{
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicI64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
 };
-use surrealdb::{engine::any::Any, Surreal};
 use tokio::time::sleep;
 use tokio_rustls::{
     rustls::{
@@ -31,25 +30,19 @@ mod handler;
 #[derive(Debug)]
 struct SharedState {
     host: String,
-    db: Surreal<Any>,
     database: PgPool,
-    cursor: AtomicU64,
+    cursor: AtomicI64,
 }
 
 impl SharedState {
     /// Update the cursor
-    pub fn update_cursor(&self, cursor: u64) {
+    pub fn update_cursor(&self, cursor: i64) {
         self.cursor.store(cursor, Ordering::Relaxed);
     }
 }
 
 /// Subscribe to a websocket server
-pub async fn start(
-    host: String,
-    cursor: u64,
-    db: Surreal<Any>,
-    database: PgPool,
-) -> anyhow::Result<()> {
+pub async fn start(host: String, cursor: i64, database: PgPool) -> anyhow::Result<()> {
     // prepare tls store
     let mut tls_store = RootCertStore::empty();
     let tls_cert = if let Some(certificate) = &ARGS.certificate {
@@ -75,8 +68,7 @@ pub async fn start(
     info!(target: "indexer", "Entering websocket loop");
     let state = Arc::new(SharedState {
         host: host.clone(),
-        db,
-        cursor: AtomicU64::new(cursor),
+        cursor: AtomicI64::new(cursor),
         database,
     });
 
@@ -111,7 +103,7 @@ pub async fn start(
 
         // rewind cursor by 10 seconds
         {
-            const REWIND_TIME: u64 = 10_000_000; // 10 seconds in microseconds
+            const REWIND_TIME: i64 = 10_000_000; // 10 seconds in microseconds
             let cursor = state.cursor.fetch_sub(REWIND_TIME, Ordering::Relaxed);
             info!(target: "indexer", "Rewinding cursor by 10 seconds: {} -> {}", cursor, cursor - REWIND_TIME);
         }

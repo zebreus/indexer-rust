@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nINSERT INTO did_label (\ndid_id,\nlabel\n) SELECT * FROM UNNEST(\n    $1::TEXT[],\n    $2::TEXT[]\n) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ebc928342c07a52ad853cb407bf8caf435aa68d8dabed47f2625799014a63d57"
+}

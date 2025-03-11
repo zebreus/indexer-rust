@@ -4,24 +4,25 @@ use serde_with::skip_serializing_none;
 use surrealdb::RecordId;
 
 /// Database struct for a bluesky profile
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
-pub struct BskyProfile {
-    #[serde(rename = "displayName")]
+pub struct BskyDid {
+    #[serde(alias = "displayName")]
     pub display_name: Option<String>,
     pub description: Option<String>,
     pub avatar: Option<RecordId>,
     pub banner: Option<RecordId>,
-    #[serde(rename = "createdAt")]
+    #[serde(alias = "createdAt")]
     pub created_at: Option<DateTime<Utc>>,
-    #[serde(rename = "seenAt")]
+    #[serde(alias = "seenAt")]
     pub seen_at: DateTime<Utc>,
-    #[serde(rename = "joinedViaStarterPack")]
+    #[serde(alias = "joinedViaStarterPack")]
     pub joined_via_starter_pack: Option<RecordId>,
-    pub labels: Option<Vec<String>>,
-    #[serde(rename = "pinnedPost")]
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(alias = "pinnedPost")]
     pub pinned_post: Option<RecordId>,
-    #[serde(rename = "extraData")]
+    #[serde(alias = "extraData")]
     pub extra_data: Option<String>,
 }
 
@@ -35,18 +36,18 @@ pub struct JetstreamCursor {
 /// Database struct for a jetstream account event
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JetstreamAccountEvent {
-    pub time_us: u64,
+    pub time_us: i64,
     pub active: bool,
-    pub seq: u64,
+    pub seq: i64,
     pub time: String,
 }
 
 /// Database struct for a jetstream identity event
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JetstreamIdentityEvent {
-    pub time_us: u64,
+    pub time_us: i64,
     pub handle: String,
-    pub seq: u64,
+    pub seq: i64,
     pub time: String,
 }
 
@@ -140,6 +141,13 @@ pub struct BskyList {
     pub extra_data: Option<String>,
 }
 
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BskyLatestBackfill {
+    pub of: RecordId,
+    pub at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BskyFollow {
     #[serde(rename = "in")]
@@ -149,7 +157,6 @@ pub struct BskyFollow {
     #[serde(rename = "createdAt")]
     pub created_at: DateTime<Utc>,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BskyLike {
     #[serde(rename = "in")]
@@ -159,7 +166,6 @@ pub struct BskyLike {
     #[serde(rename = "createdAt")]
     pub created_at: DateTime<Utc>,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BskyRepost {
     #[serde(rename = "in")]
@@ -169,7 +175,6 @@ pub struct BskyRepost {
     #[serde(rename = "createdAt")]
     pub created_at: DateTime<Utc>,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BskyBlock {
     #[serde(rename = "in")]
@@ -179,7 +184,6 @@ pub struct BskyBlock {
     #[serde(rename = "createdAt")]
     pub created_at: DateTime<Utc>,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BskyListBlock {
     #[serde(rename = "in")]
@@ -189,7 +193,6 @@ pub struct BskyListBlock {
     #[serde(rename = "createdAt")]
     pub created_at: DateTime<Utc>,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BskyListItem {
     #[serde(rename = "in")]
@@ -200,37 +203,6 @@ pub struct BskyListItem {
     pub created_at: DateTime<Utc>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BskyLatestBackfill {
-    pub of: RecordId,
-    pub at: Option<DateTime<Utc>>,
-}
-
-/// Database struct for a bluesky profile
-#[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
-pub struct BskyDid {
-    #[serde(alias = "displayName")]
-    pub display_name: Option<String>,
-    pub description: Option<String>,
-    pub avatar: Option<RecordId>,
-    pub banner: Option<RecordId>,
-    #[serde(alias = "createdAt")]
-    pub created_at: Option<DateTime<Utc>>,
-    #[serde(alias = "seenAt")]
-    pub seen_at: DateTime<Utc>,
-    #[serde(alias = "joinedViaStarterPack")]
-    pub joined_via_starter_pack: Option<RecordId>,
-    #[serde(default)]
-    pub labels: Vec<String>,
-    #[serde(alias = "pinnedPost")]
-    pub pinned_post: Option<RecordId>,
-    #[serde(alias = "extraData")]
-    pub extra_data: Option<String>,
-}
-
-/// Entry in the `quote` table
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BskyQuote {
     #[serde(rename = "in")]
@@ -238,7 +210,6 @@ pub struct BskyQuote {
     #[serde(rename = "out")]
     pub to: RecordId,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BskyRepliesRelation {
     #[serde(rename = "in")]
@@ -246,7 +217,6 @@ pub struct BskyRepliesRelation {
     #[serde(rename = "out")]
     pub to: RecordId,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BskyReplyToRelation {
     #[serde(rename = "in")]
@@ -254,7 +224,6 @@ pub struct BskyReplyToRelation {
     #[serde(rename = "out")]
     pub to: RecordId,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BskyPostsRelation {
     #[serde(rename = "in")]

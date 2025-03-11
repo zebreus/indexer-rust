@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nINSERT INTO posts_relation (\n    did_id,\n    post_id\n) SELECT * FROM UNNEST(\n    $1::TEXT[],\n    $2::TEXT[]\n) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2397f6c67e910d0cce0132a17a70beea17aabb38e26625a42b5c687cae87dc4d"
+}

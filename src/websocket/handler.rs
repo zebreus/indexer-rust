@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-use crate::database;
+use crate::database::{self, definitions::JetstreamCursor};
 
 use super::{events, SharedState};
 
@@ -18,15 +18,21 @@ pub async fn handle_message(
         events::Kind::Commit { time_us, .. } => *time_us,
         events::Kind::Identity { time_us, .. } => *time_us,
         events::Kind::Key { time_us, .. } => *time_us,
-    };
+    } as i64;
     state.update_cursor(time);
     if update_cursor {
-        database::write_cursor(&state.db, &state.host, time)
-            .await
-            .context("Unable to write cursor to database!")?;
+        database::write_cursor(
+            &state.database.clone(),
+            JetstreamCursor {
+                host: state.host.clone(),
+                time_us: time,
+            },
+        )
+        .await
+        .context("Unable to write cursor to database!")?;
     }
 
-    database::handlers::handle_event(&state.db, state.database.clone(), event)
+    database::handlers::handle_event(state.database.clone(), event)
         .await
         .context("Unable to handle event")?;
 

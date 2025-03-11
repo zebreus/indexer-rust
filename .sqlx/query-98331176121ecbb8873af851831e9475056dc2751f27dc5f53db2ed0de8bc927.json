@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM jetstream_cursor WHERE host = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "host",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "time_us",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "98331176121ecbb8873af851831e9475056dc2751f27dc5f53db2ed0de8bc927"
+}

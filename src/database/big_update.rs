@@ -16,16 +16,21 @@ use futures::lock::Mutex;
 use info::BigUpdateInfo;
 use opentelemetry::global;
 use opentelemetry::metrics::{Counter, Gauge, Histogram};
-use queries::{insert_follows, insert_latest_backfills, insert_posts};
-use serde::de::IgnoredAny;
+use queries::{
+    insert_blocks, insert_feeds, insert_follows, insert_latest_backfills, insert_likes,
+    insert_listblocks, insert_listitems, insert_lists, insert_posts, insert_posts_relations,
+    insert_profiles, insert_quotes_relations, insert_replies_relations, insert_reply_to_relations,
+    insert_reposts, upsert_latest_backfills,
+};
 use serde::Serialize;
+use sqlx::sqlite::any;
 use sqlx::PgPool;
-use std::sync::{atomic::Ordering, LazyLock};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::LazyLock;
 use std::time::Instant;
-use std::{future::IntoFuture, sync::atomic::AtomicU32};
-use surrealdb::{engine::any::Any, RecordId, Surreal};
+use surrealdb::RecordId;
 use tokio::sync::Semaphore;
-use tracing::{instrument, span, trace, warn, Instrument, Level};
+use tracing::{instrument, trace, warn};
 use types::{
     BskyBlock, BskyDid, BskyFeed, BskyFollow, BskyLatestBackfill, BskyLike, BskyList,
     BskyListBlock, BskyListItem, BskyPost, BskyPostImage, BskyPostMediaAspectRatio, BskyPostVideo,
@@ -303,6 +308,70 @@ impl BigUpdate {
     //     permits
     // }
 
+    async fn actually_attempt_apply(self, database: PgPool) -> Result<()> {
+        let BigUpdate {
+            did,
+            follows,
+            latest_backfills,
+            likes,
+            reposts,
+            blocks,
+            listblocks,
+            listitems,
+            feeds,
+            lists,
+            threadgates,
+            starterpacks,
+            postgates,
+            actordeclarations,
+            labelerservices,
+            quotes,
+            posts,
+            replies_relations,
+            reply_to_relations,
+            posts_relations,
+            overwrite_latest_backfills,
+        } = self;
+
+        let mut transaction = database.begin().await.unwrap();
+
+        // sqlx::query!("SET LOCAL synchronous_commit = 'off'")
+        //     .execute(&mut *transaction)
+        //     .await
+        //     .unwrap();
+        sqlx::query!("SET LOCAL commit_delay = 10000")
+            .execute(&mut *transaction)
+            .await?;
+
+        sqlx::query!("SET CONSTRAINTS ALL DEFERRED")
+            .execute(&mut *transaction)
+            .await?;
+
+        insert_profiles(&did, &mut transaction).await?;
+        insert_follows(&follows, &mut transaction).await?;
+        insert_likes(&likes, &mut transaction).await?;
+        insert_reposts(&reposts, &mut transaction).await?;
+        insert_blocks(&blocks, &mut transaction).await?;
+        insert_listblocks(&listblocks, &mut transaction).await?;
+        insert_listitems(&listitems, &mut transaction).await?;
+        insert_feeds(&feeds, &mut transaction).await?;
+        insert_lists(&lists, &mut transaction).await?;
+        // insert_threadgates(&threadgates, &mut transaction).await?;
+        // insert_starterpacks(&starterpacks, &mut transaction).await?;
+        // insert_postgates(&postgates, &mut transaction).await?;
+        // insert_actordeclarations(&actordeclarations, &mut transaction).await?;
+        // insert_labelerservices(&labelerservices, &mut transaction).await?;
+        insert_quotes_relations(&quotes, &mut transaction).await?;
+        insert_replies_relations(&replies_relations, &mut transaction).await?;
+        insert_reply_to_relations(&reply_to_relations, &mut transaction).await?;
+        insert_posts_relations(&posts_relations, &mut transaction).await?;
+        insert_posts(&posts, &mut transaction).await?;
+        insert_latest_backfills(&latest_backfills, &mut transaction).await?;
+        upsert_latest_backfills(&overwrite_latest_backfills, &mut transaction).await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
     /// Apply this update to the database
     ///
     /// `source` is a string describing the source of the update, used for metrics
@@ -310,122 +379,20 @@ impl BigUpdate {
     /// Apply attempt with a convoluted mechanism to avoid congestion
     async fn attempt_apply(
         &mut self,
-        db: &Surreal<Any>,
         database: PgPool,
         source: &str,
         info: &BigUpdateInfo,
     ) -> Result<UpdateState> {
         let start = Instant::now();
 
-        let cloned = self.clone();
-        tokio::task::spawn(async move {
-            let mut transaction = database.begin().await.unwrap();
-
-            sqlx::query!("SET LOCAL synchronous_commit = 'off'")
-                .execute(&mut *transaction)
-                .await
-                .unwrap();
-            sqlx::query!("SET LOCAL commit_delay = 10000")
-                .execute(&mut *transaction)
-                .await
-                .unwrap();
-            sqlx::query!("SET CONSTRAINTS ALL DEFERRED")
-                .execute(&mut *transaction)
-                .await
-                .unwrap();
-            sqlx::query!("LOCK latest_backfill")
-                .execute(&mut *transaction)
-                .await
-                .unwrap();
-
-            sqlx::query!("LOCK post")
-                .execute(&mut *transaction)
-                .await
-                .unwrap();
-            insert_latest_backfills(&cloned.latest_backfills, &mut transaction)
-                .await
-                .unwrap();
-            insert_posts(&cloned.posts, &mut (transaction))
-                .await
-                .unwrap();
-            insert_follows(&cloned.follows, &mut (transaction))
-                .await
-                .unwrap();
-            transaction.commit().await.unwrap();
-        })
-        .await?;
-
-        // Create the query string
-        // `RETURN VALUE none` is used to get empty return values for counting the number of inserted rows
-        let query_string = r#"
-            BEGIN;
-            // INSERT IGNORE INTO latest_backfill $latest_backfills RETURN VALUE none;
-            // INSERT IGNORE INTO did $dids RETURN NONE;
-            // INSERT IGNORE INTO feed $feeds RETURN NONE;
-            // INSERT IGNORE INTO list $lists RETURN NONE;
-            // INSERT IGNORE INTO lex_app_bsky_feed_threadgate $threadgates RETURN NONE;
-            // INSERT IGNORE INTO lex_app_bsky_graph_starterpack $starterpacks RETURN NONE;
-            // INSERT IGNORE INTO lex_app_bsky_feed_postgate $postgates RETURN NONE;
-            // INSERT IGNORE INTO lex_chat_bsky_actor_declaration $actordeclarations RETURN NONE;
-            // INSERT IGNORE INTO lex_app_bsky_labeler_service $labelerservices RETURN NONE;
-            // INSERT IGNORE INTO post $posts RETURN NONE;
-            // INSERT RELATION INTO posts $posts_relations RETURN NONE;
-            // INSERT RELATION INTO quotes $quotes RETURN NONE;
-            // INSERT RELATION INTO like $likes RETURN NONE;
-            // INSERT RELATION INTO repost $reposts RETURN NONE;
-            // INSERT RELATION INTO block $blocks RETURN NONE;
-            // INSERT RELATION INTO listblock $listblocks RETURN NONE;
-            // INSERT RELATION INTO listitem $listitems RETURN NONE;
-            // INSERT RELATION INTO replyto $reply_to_relations RETURN NONE;
-            // INSERT RELATION INTO quotes $quotes RETURN NONE;
-            // INSERT RELATION INTO replies $replies_relations RETURN NONE;
-            // INSERT RELATION INTO follow $follows RETURN NONE;
-            // FOR $backfill in $overwrite_latest_backfill {
-            //     UPSERT type::thing("latest_backfill", $backfill.id) MERGE $backfill;
-            // };
-            COMMIT;
-        "#;
-
-        // Create the update query. Does not take that long; ~50ms for 30000 rows
-        let update = tokio::task::block_in_place(|| {
-            db.query(query_string)
-                // .bind(("dids", self.did.clone()))
-                // .bind(("follows", self.follows.clone()))
-                // .bind(("latest_backfills", self.latest_backfills.clone()))
-                // .bind(("likes", self.likes.clone()))
-                // .bind(("reposts", self.reposts.clone()))
-                // .bind(("blocks", self.blocks.clone()))
-                // .bind(("listblocks", self.listblocks.clone()))
-                // .bind(("listitems", self.listitems.clone()))
-                // .bind(("feeds", self.feeds.clone()))
-                // .bind(("lists", self.lists.clone()))
-                // .bind(("threadgates", self.threadgates.clone()))
-                // .bind(("starterpacks", self.starterpacks.clone()))
-                // .bind(("postgates", self.postgates.clone()))
-                // .bind(("actordeclarations", self.actordeclarations.clone()))
-                // .bind(("labelerservices", self.labelerservices.clone()))
-                // .bind(("quotes", self.quotes.clone()))
-                // .bind(("posts", self.posts.clone()))
-                // .bind(("replies_relations", self.replies_relations.clone()))
-                // .bind(("reply_to_relations", self.reply_to_relations.clone()))
-                // .bind(("posts_relations", self.posts_relations.clone()))
-                // .bind((
-                //     "overwrite_latest_backfill",
-                //     self.overwrite_latest_backfills.clone(),
-                // ))
-                .into_future()
-                .instrument(span!(Level::INFO, "query"))
-        });
-
-        let preparation_duration = start.elapsed();
         let after_update = Instant::now();
 
-        // What follows is a complex mechanism to limit the number of concurrent transactions. We need to do this ourselves because surrealdb just drops conflicting transactions.
-        // The mechanism is as follows:
+        // // What follows is a complex mechanism to limit the number of concurrent transactions. We need to do this ourselves because surrealdb just drops conflicting transactions.
+        // // The mechanism is as follows:
 
-        // We have a given budget of permits that can be used for transactions. Each transaction costs a certain amount of permits, the bigger the transaction, the more permits it costs.
-        //
-        // The base cost of a transaction is increased, when transactions are dropped due to congestion, and decreased when transactions are successful.
+        // // We have a given budget of permits that can be used for transactions. Each transaction costs a certain amount of permits, the bigger the transaction, the more permits it costs.
+        // //
+        // // The base cost of a transaction is increased, when transactions are dropped due to congestion, and decreased when transactions are successful.
 
         // Minimum cost for a transaction in permits
         static MIN_COST: u32 = 20;
@@ -445,22 +412,18 @@ impl BigUpdate {
         // A multiplier for transactions that may cause congestion
         let transaction_cost_multiplier = f64::log10(10.0 + info.all().count as f64).floor() as u32;
         let transaction_cost = std::cmp::min(*MAX_COST, base_cost * transaction_cost_multiplier);
-        let mut result = {
+
+        let result: anyhow::Result<()> = {
+            let cloned = self.clone();
             let _permit = SEMAPHORE.acquire_many(transaction_cost).await.unwrap();
-            update.await
-        }?;
-        let errors = result.take_errors();
-
+            tokio::task::spawn(async move { cloned.actually_attempt_apply(database).await })
+        }
+        .await
+        .unwrap();
+        // let errors = result.take_errors();
         // Return retry if the transaction can be retried
-        if !errors.is_empty() {
-            let can_be_retried = errors.iter().any(|(_, e)| {
-                if let surrealdb::Error::Api(surrealdb::error::Api::Query(message)) = e {
-                    message.contains("This transaction can be retried")
-                } else {
-                    false
-                }
-            });
-
+        if let Err(error) = &result {
+            let can_be_retried = format!("{:?}", error).contains("deadlock");
             if can_be_retried {
                 // Raise the cost for each retry
                 TRANSACTION_COST
@@ -488,17 +451,19 @@ impl BigUpdate {
         let update_duration = after_update.elapsed();
         QUERY_DURATION_METRIC.record(update_duration.as_millis() as u64, &[]);
 
-        // Return error if there are any errors
-        if !errors.is_empty() {
+        // // Return error if there are any errors
+        if let Err(error) = result {
+            // tracing::error!("Database error!!!!!!!!!!!!!!!!!!!!!! {:?}", &error);
             FAILED_BIG_UPDATES_METRIC.add(1, &[]);
+            return Err(error.into());
 
-            let mut sorted_errors = errors.into_iter().collect::<Vec<_>>();
-            sorted_errors.sort_by(|(a, _), (b, _)| a.cmp(b));
-            for error in &sorted_errors {
-                warn!("Database error: {:?}", error);
-            }
-            let first_error = &sorted_errors.first().unwrap().1;
-            return Err(anyhow::anyhow!("Database error: {:?}", first_error));
+            // let mut sorted_errors = errors.into_iter().collect::<Vec<_>>();
+            // sorted_errors.sort_by(|(a, _), (b, _)| a.cmp(b));
+            // for error in &sorted_errors {
+            //     warn!("Database error: {:?}", error);
+            // }
+            // let first_error = &sorted_errors.first().unwrap().1;
+            // return Err(anyhow::anyhow!("Database error: {:?}", first_error));
         }
 
         // At this point, we know that the update was successful
@@ -506,18 +471,17 @@ impl BigUpdate {
         // Record metrics
         info.record_metrics(source);
 
-        // Record stats about newly discovered DIDs
-        let newly_discovered_dids = result.take::<Vec<IgnoredAny>>(0).unwrap().len();
-        // warn!("Newly discovered DIDs: {}", newly_discovered_dids);
-        if newly_discovered_dids > 0 {
-            NEWLY_DISCOVERED_DIDS_METRIC.add(newly_discovered_dids as u64, &[]);
-        }
+        // // Record stats about newly discovered DIDs
+        // let newly_discovered_dids = result.take::<Vec<IgnoredAny>>(0).unwrap().len();
+        // // warn!("Newly discovered DIDs: {}", newly_discovered_dids);
+        // if newly_discovered_dids > 0 {
+        //     NEWLY_DISCOVERED_DIDS_METRIC.add(newly_discovered_dids as u64, &[]);
+        // }
 
         trace!(
-            "Applied updated: {} elements, {}MB, {:03}ms preparation, {:03}ms applying",
+            "Applied updated: {} elements, {}MB, {:03}ms applying",
             info.all().count,
             info.all().size as f64 / 1024.0 / 1024.0,
-            preparation_duration.as_millis(),
             update_duration.as_millis(),
         );
         // debug!("Detailed infos: {:?}", info);
@@ -842,7 +806,7 @@ impl BigUpdate {
     /// Apply this update to the database
     ///
     /// `source` is a string describing the source of the update, used for metrics
-    pub async fn apply(self, db: &Surreal<Any>, database: PgPool, source: &str) -> Result<()> {
+    pub async fn apply(self, database: PgPool, source: &str) -> Result<()> {
         // If updates are too small, we add them into an accumulator and return here.
         // The accumulated updates will be flushed when it is big enough.
         let (mut update, info) = {
@@ -874,7 +838,7 @@ impl BigUpdate {
         let mut attempts_left = 100;
         loop {
             let state = update
-                .attempt_apply(db, database.clone(), source, &info)
+                .attempt_apply(database.clone(), source, &info)
                 .await?;
             match state {
                 UpdateState::Applied => {

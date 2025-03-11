@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO jetstream_cursor (host, time_us) VALUES ($1, $2) ON CONFLICT (host) DO UPDATE SET time_us = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "379a74247af1715403efb686f7d41113cc4955ee6796ec00fd07608e8486ac61"
+}

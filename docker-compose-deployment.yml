@@ -46,31 +46,44 @@ services:
       # Generate a new password with `htpasswd -nB -C4 grafana`
       - "traefik.http.middlewares.auth.basicauth.users=grafana:$$2y$$04$$qxpOMWJdp4vMc2Z1u4afaeykArMJw7Y2cz.JeNKTVx/TfPu31TvQK"
       - "traefik.http.services.grafana.loadbalancer.server.port=3000"
-  surrealdb:
-    image: surrealdb/surrealdb:latest
-    container_name: surrealdb
-    ports:
-      - "127.0.0.1:8000:8000"
-    user: root
-    command:
-      - start
-      - -A
-      - --user=root
-      - --pass=root
-      - rocksdb:///data/rocksdb
-    healthcheck:
-      test: bash -c "exec 6<> /dev/tcp/localhost/8000"
-      interval: 30s
-      timeout: 15s
-      retries: 5
-    volumes:
-      - /data/surreal/rocksdb:/data/rocksdb
+  db:
+    image: postgres
+    container_name: db
     restart: always
+    user: root
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_USER: user-name
+      POSTGRES_PASSWORD: strong-password
+    volumes:
+      - /data/postgres:/var/lib/postgresql/data
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin4_container
+    restart: always
+    user: root
+    ports:
+      - "127.0.0.1:8888:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: user-name@domain-name.com
+      PGADMIN_DEFAULT_PASSWORD: strong-password
+    volumes:
+      - /data/pgadmin:/var/lib/pgadmin
+    labels:
+      - "traefik.enable=true"
+      # Insert your domain here
+      - "traefik.http.routers.pgadmin.rule=Host(`pgadmin.indexer.skyfeedlol.lol`)"
+      - "traefik.http.routers.pgadmin.entrypoints=websecure"
+      - "traefik.http.routers.pgadmin.tls.certresolver=myresolver"
+      - "traefik.http.routers.pgadmin.middlewares=auth"
+      # Generate a new password with `htpasswd -nB -C4 pgadmin`
+      - "traefik.http.middlewares.auth.basicauth.users=grafana:$$2y$$04$$qxpOMWJdp4vMc2Z1u4afaeykArMJw7Y2cz.JeNKTVx/TfPu31TvQK"
+      - "traefik.http.services.pgadmin.loadbalancer.server.port=80"
   indexer:
     depends_on:
-      surrealdb:
+      db:
         condition: service_started
-
       grafana:
         condition: service_healthy
     build:
@@ -78,7 +91,7 @@ services:
       dockerfile: Dockerfile
     container_name: indexer
     command:
-      - --db=ws://surrealdb:8000
+      - --db=postgres://user-name:strong-password@db/user-name
       # Insert additional flags here
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://grafana:4317"

@@ -50,19 +50,19 @@ pub enum Kind {
     #[serde(rename = "commit")]
     Commit {
         did: Did,
-        time_us: u64,
+        time_us: i64,
         commit: Commit,
     },
     #[serde(rename = "identity")]
     Identity {
         did: Did,
-        time_us: u64,
+        time_us: i64,
         identity: Identity,
     },
     #[serde(rename = "account")]
     Key {
         did: Did,
-        time_us: u64,
+        time_us: i64,
         account: Account,
     },
 }

@@ -1,4 +1,3 @@
-use anyhow::Context;
 use config::ARGS;
 use database::{connect, repo_indexer::start_full_repo_indexer};
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
@@ -65,15 +64,12 @@ async fn application_main() -> anyhow::Result<()> {
     let _otel_guard = init_observability().await;
 
     // Connect to the database
-    let db = database::connect_surreal(ARGS.db.first().unwrap())
-        .await
-        .context("Failed to connect to the database")?;
     let database = connect().await?;
 
     // Create tasks
     let metrics_task = export_system_metrics().boxed();
-    let jetstream_task = attach_jetstream(db.to_owned(), database.clone()).boxed();
-    let indexer_task = start_full_repo_indexer(db.to_owned(), database.clone()).boxed_local();
+    let jetstream_task = attach_jetstream(database.clone()).boxed();
+    let indexer_task = start_full_repo_indexer(database.clone()).boxed_local();
 
     // Add all tasks to a list
     let mut tasks: FuturesUnordered<_> = FuturesUnordered::new();

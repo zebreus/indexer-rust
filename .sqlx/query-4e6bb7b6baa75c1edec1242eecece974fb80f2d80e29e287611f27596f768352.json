@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SET LOCAL slow_acquire_threshold_secs = \"20s\"",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "4e6bb7b6baa75c1edec1242eecece974fb80f2d80e29e287611f27596f768352"
+}

@@ -18,7 +18,6 @@ use serde::Deserialize;
 use serde_ipld_dagcbor::from_reader;
 use sqlx::PgPool;
 use std::{collections::HashMap, sync::LazyLock, time::Duration};
-use surrealdb::{engine::any::Any, Surreal};
 use tokio::task::spawn_blocking;
 use tracing::{instrument, span, trace, warn, Level, Span};
 
@@ -138,7 +137,6 @@ fn convert_repo_to_update(
 
 #[derive(Debug)]
 pub struct CommonState {
-    db: Surreal<Any>,
     database: PgPool,
     http_client: Client,
     did: String,
@@ -171,12 +169,7 @@ pub struct ApplyUpdates {
 }
 
 impl DownloadService {
-    pub fn new(
-        db: Surreal<Any>,
-        database: PgPool,
-        http_client: Client,
-        did: String,
-    ) -> DownloadService {
+    pub fn new(database: PgPool, http_client: Client, did: String) -> DownloadService {
         let span = span!(target: "backfill", parent: None, Level::INFO, "pipeline_item");
         span.record("did", did.clone());
         span.in_scope(|| {
@@ -184,7 +177,6 @@ impl DownloadService {
         });
         DownloadService {
             common: CommonState {
-                db,
                 database,
                 http_client,
                 did,
@@ -328,7 +320,7 @@ impl Stage for ApplyUpdates {
     async fn run(self) -> anyhow::Result<Self::Next> {
         if !ARGS.no_write_when_backfilling {
             self.update
-                .apply(&self.common.db, self.common.database.clone(), "backfill")
+                .apply(self.common.database.clone(), "backfill")
                 .await?;
         } else {
             warn!("Skipping writing to the database and sleeping instead");

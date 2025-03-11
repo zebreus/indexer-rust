@@ -31,7 +31,7 @@ where
 pub async fn connect_tls(
     host: &String,
     connector: &TlsConnector,
-    cursor: Option<u64>,
+    cursor: Option<i64>,
 ) -> anyhow::Result<WebSocket<TokioIo<Upgraded>>> {
     // create tcp connection to server
     debug!(target: "indexer", "Connecting to: {}", host);

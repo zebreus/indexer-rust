@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nINSERT INTO did (\n    id,\n    display_name,\n    description,\n    avatar,\n    banner,\n    joined_via_starter_pack,\n    created_at,\n    seen_at,\n    pinned_post,\n    extra_data\n) SELECT * FROM UNNEST(\n    $1::TEXT[],\n    $2::TEXT[],\n    $3::TEXT[],\n    $4::TEXT[],\n    $5::TEXT[],\n    $6::TEXT[],\n    $7::TIMESTAMP[],\n    $8::TIMESTAMP[],\n    $9::TEXT[],\n    $10::TEXT[]\n) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TimestampArray",
+        "TimestampArray",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "87454242a84fc51b63033ec0853734c325bb9a50b63860766725a420c80cfdf7"
+}

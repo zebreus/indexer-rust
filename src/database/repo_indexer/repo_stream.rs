@@ -1,31 +1,24 @@
 use crate::{config::ARGS, database::utils::unsafe_user_key_to_did};
-use futures::Stream;
-use serde::Deserialize;
+use chrono::{DateTime, Utc};
+use futures::{FutureExt, Stream};
+use sqlx::PgPool;
 use std::{
     collections::{HashSet, VecDeque},
     future::{Future, IntoFuture},
     pin::Pin,
     task::Poll,
 };
-use surrealdb::{engine::any::Any, Response, Surreal};
 use tracing::{error, trace};
 
 pub struct RepoStream {
     buffer: VecDeque<String>,
     processed_dids: HashSet<String>,
-    db: Surreal<Any>,
-    db_future: Option<Pin<Box<dyn Future<Output = surrealdb::Result<Response>> + Send>>>,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize)]
-struct LatestBackfill {
-    pub at: Option<surrealdb::sql::Datetime>,
-    pub of: surrealdb::RecordId,
+    db: sqlx::PgPool,
+    db_future: Option<Pin<Box<dyn Future<Output = Result<Vec<DbBackfill>, sqlx::Error>> + Send>>>,
 }
 
 impl RepoStream {
-    pub fn new(db: Surreal<Any>) -> Self {
+    pub fn new(db: PgPool) -> Self {
         Self {
             buffer: VecDeque::new(),
             processed_dids: HashSet::new(),
@@ -33,6 +26,12 @@ impl RepoStream {
             db_future: None,
         }
     }
+}
+
+struct DbBackfill {
+    id: String,
+    at: Option<DateTime<Utc>>,
+    of_did_id: String,
 }
 
 impl Stream for RepoStream {
@@ -52,13 +51,18 @@ impl Stream for RepoStream {
             let db_future = match &mut self.db_future {
                 Some(db_future) => db_future,
                 _ => {
-                    let db_future = self
-                        .db
-                        // TODO: Fix the possible SQL injection
-                        .query("SELECT of FROM latest_backfill WHERE at IS NONE LIMIT $limit;")
-                        .bind(("limit", ARGS.repo_stream_buffer_size))
-                        .into_owned()
-                        .into_future();
+                    // Totally unsafe cast where we create a static ref to self.db using transmute
+                    let static_db_ref =
+                        unsafe { std::mem::transmute::<&PgPool, &'static PgPool>(&self.db) };
+                    let db_future = sqlx::query_as!(
+                        DbBackfill,
+                        "SELECT * FROM latest_backfill WHERE at IS NULL LIMIT $1",
+                        &(*&ARGS.repo_stream_buffer_size as i64)
+                    )
+                    .fetch_all(static_db_ref)
+                    .into_future()
+                    .boxed();
+
                     self.db_future = Some(db_future);
                     self.db_future.as_mut().unwrap()
                 }
@@ -69,7 +73,7 @@ impl Stream for RepoStream {
             };
             self.db_future = None;
 
-            let mut result = match result {
+            let follows = match result {
                 Ok(result) => result,
                 Err(err) => {
                     error!("RepoStream error: {:?}", err);
@@ -77,23 +81,15 @@ impl Stream for RepoStream {
                 }
             };
 
-            let follows: Vec<LatestBackfill> = match result.take(0) {
-                Ok(follows) => follows,
-                Err(err) => {
-                    error!("RepoStream database error: {:?}", err);
-                    continue;
-                }
-            };
-
             let starttime = std::time::Instant::now();
             for latest_backfill in &follows {
-                let key = latest_backfill.of.key().to_string();
+                let key = latest_backfill.of_did_id.clone();
                 if self.processed_dids.contains(&key) {
                     continue;
                 }
-                self.processed_dids.insert(key);
+                self.processed_dids.insert(key.clone());
                 // TODO: Investigate if we can just use the RecordId directly
-                let did = unsafe_user_key_to_did(&format!("{}", latest_backfill.of.key()));
+                let did = unsafe_user_key_to_did(&format!("{}", key));
                 self.buffer.push_back(did);
             }
             let duration = starttime.elapsed();

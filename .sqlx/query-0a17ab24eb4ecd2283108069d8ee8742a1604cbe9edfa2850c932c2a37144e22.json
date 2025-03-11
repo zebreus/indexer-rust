@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nINSERT INTO feed (\nid,\nuri,\nauthor,\nrkey,\ndid,\ndisplay_name,\ndescription,\navatar,\ncreated_at,\nextra_data\n) SELECT * FROM UNNEST(\n    $1::TEXT[],\n    $2::TEXT[],\n    $3::TEXT[],\n    $4::TEXT[],\n    $5::TEXT[],\n    $6::TEXT[],\n    $7::TEXT[],\n    $8::TEXT[],\n    $9::TIMESTAMP[],\n    $10::TEXT[]\n) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TimestampArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0a17ab24eb4ecd2283108069d8ee8742a1604cbe9edfa2850c932c2a37144e22"
+}

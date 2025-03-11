@@ -11,10 +11,16 @@ pub struct Args {
     /// Set the tokio threadpool size. The default value is the number of cores available to the system.
     #[arg(long)]
     pub threads: Option<usize>,
-    /// Endpoint of the database server (including port and protocol)
-    /// You can specify multiple surrealdbs by repeating this argument, but they should all point to the same underlying datastore
-    #[arg(short = 'D', long, num_args=1..=16, default_value = "ws://127.0.0.1:8000")]
-    pub db: Vec<String>,
+    /// Postgres connection string
+    #[arg(
+        short = 'D',
+        long,
+        default_value = "postgres://user-name:strong-password@localhost/user-name"
+    )]
+    pub db: String,
+    /// Size of the database connection pool
+    #[arg(long, default_value = "10")]
+    pub db_pool_size: u32,
     /// Username for the database server
     #[arg(short, long, default_value = "root")]
     pub username: String,

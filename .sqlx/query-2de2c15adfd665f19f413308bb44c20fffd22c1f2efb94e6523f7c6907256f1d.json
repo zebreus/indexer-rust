@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "LOCK post",
+  "query": "SET LOCAL slow_threshold = \"10s\"",
   "describe": {
     "columns": [],
     "parameters": {
@@ -8,5 +8,5 @@
     },
     "nullable": []
   },
-  "hash": "e4204017e65b8c5235c8e831974f00df487c860371b151a9c4e044d4960d0f46"
+  "hash": "2de2c15adfd665f19f413308bb44c20fffd22c1f2efb94e6523f7c6907256f1d"
 }
